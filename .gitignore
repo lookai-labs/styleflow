@@ -216,3 +216,25 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+################################ 이동석 관리 ################################
+# StyleFlow frontend
+frontend/node_modules/
+frontend/.next/
+
+# StyleFlow Django runtime
+backend/media/
+backend/staticfiles/
+
+# IDE / OS
+.vscode/
+Thumbs.db
+
+# Python version
+.python-version
+
+# 가중치 파일
+*.pth
+*.pt
+*.ckpt
+*.h5
