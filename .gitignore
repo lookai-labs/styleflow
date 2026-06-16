@@ -217,7 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-################################ 이동석 관리 ################################
+
 # StyleFlow frontend
 frontend/node_modules/
 frontend/.next/
