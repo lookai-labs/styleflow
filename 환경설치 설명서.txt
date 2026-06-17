@@ -1,0 +1,29 @@
+[환경 설치]
+1. conda create -n p310_pj_styleflow python=3.10
+2. conda activate p310_pj_styleflow
+3. requirements.txt를 Claude Code에 보여주고 설치 진행
+> requirements.txt를 보고 패키지를 설치해주는데 requirements.txt의 내용을 절대 수정하지마.
+
+[터미널1: 백엔드 실행]
+cd backend
+run.bat
+
+[터미널2: 프론트엔드 실행]
+cd frontend
+npm run dev
+
+[접속 - 사용자]
+http://localhost:3000/
+ID : hellods0915	
+PW : 1234
+(회원가입도 가능합니다.)
+
+[접속 - 어드민]
+ID : adnim
+PW : 1234
+
+[가이드라인]
+guidelines/styleflow.md
+
+[헤어겐 모델 설치 (약 7GB)]
+backend/gan_models/HairFastGAN-p310/model_downloader.py실행

@@ -1,0 +1,7 @@
+tensorflow==2.13.0
+dlib
+numpy
+Pillow
+matplotlib
+imageio
+opencv-python
