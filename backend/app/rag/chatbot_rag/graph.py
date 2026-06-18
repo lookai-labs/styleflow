@@ -12,6 +12,11 @@ from backend.app.rag.chatbot_rag.image_nodes import (
     classify_image_intent,
     handle_image_synthesis_request,
 )
+from backend.app.rag.chatbot_rag.retouch_nodes import (
+    ask_retouch_confirmation,
+    handle_retouch_confirmation,
+    run_retouch_synthesis,
+)
 from backend.app.rag.chatbot_rag.nodes import (
     analyze_outfit_image,
     ask_clarification,
@@ -42,12 +47,14 @@ from backend.app.rag.chatbot_rag.intents import (
     INTENT_MOOD_SELECTION,
     INTENT_OUTFIT_FIT_CHECK,
     INTENT_OUTFIT_RECOMMENDATION,
+    INTENT_RETOUCH,
     INTENT_STYLE_EXPLANATION,
     OUTFIT_INTENTS,
     PENDING_OUTFIT_CONTEXT,
     PENDING_OUTFIT_OPTION_SELECTION,
     PENDING_OUTFIT_SYNTHESIS_CONFIRMATION,
     PENDING_OUTFIT_USER_IMAGE_REQUIRED,
+    PENDING_RETOUCH_CONFIRMATION,
     PENDING_SELECTION_MOOD,
 )
 from backend.app.rag.chatbot_rag.state import ChatbotState
@@ -78,6 +85,8 @@ def _route_by_pending(state: ChatbotState) -> str:
         return "handle_outfit_option_pending"
     if pending == PENDING_OUTFIT_USER_IMAGE_REQUIRED:
         return "handle_outfit_user_image_pending"
+    if pending == PENDING_RETOUCH_CONFIRMATION and selected_option:
+        return "handle_retouch_confirmation"
 
     return "classify_image_intent"
 
@@ -100,8 +109,17 @@ def route_after_image_intent(state: ChatbotState) -> str:
     return "analyze_image_if_needed"
 
 
+def _route_after_retouch_confirmation(state: ChatbotState) -> str:
+    if state.get("retouch_action") == "confirm":
+        return "run_retouch_synthesis"
+    return "update_memory"
+
+
 def route_after_intent(state: ChatbotState) -> str:
     intent = state.get("intent")
+
+    if intent == INTENT_RETOUCH:
+        return "ask_retouch_confirmation"
 
     # style_explanation: selected_recommendation이 있으면 RAG, 없으면 static 안내
     if intent == INTENT_STYLE_EXPLANATION:
@@ -192,6 +210,11 @@ def build_chatbot_graph():
     graph.add_node("handle_outfit_user_image_pending", handle_outfit_user_image_pending)
     graph.add_node("run_outfit_synthesis", run_outfit_synthesis)
 
+    # 리터칭 노드
+    graph.add_node("ask_retouch_confirmation", ask_retouch_confirmation)
+    graph.add_node("handle_retouch_confirmation", handle_retouch_confirmation)
+    graph.add_node("run_retouch_synthesis", run_retouch_synthesis)
+
     # ── 엣지 ──────────────────────────────────────────────────────────────────
 
     graph.add_edge(START, "check_analysis_exists")
@@ -214,6 +237,7 @@ def build_chatbot_graph():
             "handle_synthesis_confirmation": "handle_synthesis_confirmation",
             "handle_outfit_option_pending": "handle_outfit_option_pending",
             "handle_outfit_user_image_pending": "handle_outfit_user_image_pending",
+            "handle_retouch_confirmation": "handle_retouch_confirmation",
             "classify_image_intent": "classify_image_intent",
         },
     )
@@ -282,12 +306,22 @@ def build_chatbot_graph():
         "classify_intent",
         route_after_intent,
         {
+            "ask_retouch_confirmation": "ask_retouch_confirmation",
             "ask_clarification": "ask_clarification",
             "ask_mood_selection": "ask_mood_selection",
             "ask_outfit_context_selection": "ask_outfit_context_selection",
             "check_hair_makeup_ready": "check_hair_makeup_ready",
             "generate_non_rag_answer": "generate_non_rag_answer",
             "retrieve_context": "retrieve_context",
+        },
+    )
+
+    graph.add_conditional_edges(
+        "handle_retouch_confirmation",
+        _route_after_retouch_confirmation,
+        {
+            "run_retouch_synthesis": "run_retouch_synthesis",
+            "update_memory": "update_memory",
         },
     )
 
@@ -305,6 +339,8 @@ def build_chatbot_graph():
     graph.add_edge("analyze_outfit_image", "generate_outfit_answer")
 
     # update_memory로 수렴하는 엣지들
+    graph.add_edge("ask_retouch_confirmation", "update_memory")
+    graph.add_edge("run_retouch_synthesis", "update_memory")
     graph.add_edge("handle_image_synthesis_request", "update_memory")
     graph.add_edge("ask_clarification", "update_memory")
     graph.add_edge("ask_mood_selection", "update_memory")
@@ -329,6 +365,7 @@ def run_chatbot(
     user_message: str | None = None,
     feedback_text: str | None = None,
     image_url: str | None = None,
+    sim_image_url: str | None = None,
     target_type: str | None = None,
     applied_style_key: str | None = None,
     selected_option: dict[str, Any] | None = None,
@@ -352,6 +389,7 @@ def run_chatbot(
     initial_state: ChatbotState = {
         "user_message": message or "",
         "image_url": image_url,
+        "sim_image_url": sim_image_url,
         "target_type": normalized_target_type,
         "applied_style_key": applied_style_key,
         "selected_option": selected_option,
@@ -404,4 +442,6 @@ def run_chatbot(
         "image_analysis": result.get("image_analysis"),
         "image_visual_features": result.get("image_visual_features", []),
         "image_detected_style": result.get("image_detected_style"),
+        # 리터칭
+        "retouched_image_url": result.get("retouched_image_url"),
     }

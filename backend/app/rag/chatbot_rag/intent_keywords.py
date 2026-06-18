@@ -532,6 +532,61 @@ OUTFIT_EVENT_KEYWORDS = [
     "행사",
 ]
 
+# ---------------------------------------------------------------------------
+# retouch — GAN 합성 이미지 직접 편집 요청 감지
+# ---------------------------------------------------------------------------
+
+# 이미지를 명시적으로 지칭하는 표현
+RETOUCH_EXPLICIT_KEYWORDS = [
+    "리터칭",
+    "이 이미지",
+    "이 사진",
+    "이 합성",
+    "합성 이미지",
+    "시뮬레이션 이미지",
+    "시뮬레이션 사진",
+    "이미지를 바꿔",
+    "이미지 바꿔",
+    "사진을 바꿔",
+    "사진 바꿔",
+    "이미지 수정",
+    "사진 수정",
+]
+
+# 직접 수정 요청 동사
+RETOUCH_EDIT_VERBS = [
+    "바꿔줘",
+    "바꿔 줘",
+    "수정해줘",
+    "수정해 줘",
+    "변경해줘",
+    "변경해 줘",
+    "고쳐줘",
+    "고쳐 줘",
+]
+
+# 이미지/사진을 지칭하는 명사 (동사와 조합 시만 retouch로 판별)
+RETOUCH_IMAGE_NOUNS = [
+    "이미지",
+    "사진",
+    "합성",
+    "시뮬레이션",
+]
+
+
+def is_retouch_request(message: str) -> bool:
+    """
+    GAN 합성 이미지에 대한 직접 편집/수정 요청인지 판별한다.
+    classify_intent 노드에서 sim_image_url 존재 여부와 함께 확인한다.
+    """
+    msg = message.strip().lower()
+    if any(kw in msg for kw in RETOUCH_EXPLICIT_KEYWORDS):
+        return True
+    has_verb = any(v in msg for v in RETOUCH_EDIT_VERBS)
+    has_noun = any(n in msg for n in RETOUCH_IMAGE_NOUNS)
+    return has_verb and has_noun
+
+
 _GREETING_STRIP_CHARS = "!?~ㅎㅋ\t\n "
 _GREETING_SET = {kw.lower() for kw in GREETING_KEYWORDS}
 

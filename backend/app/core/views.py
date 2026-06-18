@@ -414,6 +414,7 @@ def ai_chat(request):
     gender_raw = getattr(request.user, 'gender', 'female')
     gender = _GENDER_MAP.get(gender_raw, '여성')
     face_proportion = _FACE_PROPORTION_MAP.get('golden', '균형')
+    sim_image_url = request.data.get('sim_image_url') or None
 
     previous_analysis = request.data.get('previous_analysis') or (
         "둥근형 얼굴에 어울리는 레이어드 웨이브 헤어스타일과 봄 웜톤에 맞는 코랄 메이크업을 추천드립니다."
@@ -436,6 +437,7 @@ def ai_chat(request):
             chat_history=chat_history,
             user_profile=user_profile,
             selected_option=selected_option,
+            sim_image_url=sim_image_url,
         )
     except Exception as e:
         logger.error("챗봇 답변 생성 실패: user_id=%s, error=%s", request.user.id, e, exc_info=True)
@@ -447,6 +449,7 @@ def ai_chat(request):
         'updated_user_profile': result.get('updated_user_profile', {}),
         'selection': result.get('selection'),
         'pending_selection': result.get('pending_selection'),
+        'retouched_image_url': result.get('retouched_image_url'),
     })
 
 
@@ -516,6 +519,7 @@ def feedback_chat(request):
     target_type = request.data.get('target_type', 'makeup')
     simulation_result_id = request.data.get('simulation_result_id')
     applied_style_key = request.data.get('applied_style_key') or ''
+    img_url = request.data.get('img_url') or None
 
     sim_result = None
     if simulation_result_id:
@@ -531,6 +535,7 @@ def feedback_chat(request):
         user_chat=user_chat,
         ai_chat=ai_chat,
         applied_style_key=applied_style_key,
+        img_url=img_url,
     )
 
     return Response({'ok': True}, status=status.HTTP_201_CREATED)

@@ -37,3 +37,7 @@ PENDING_OUTFIT_CONTEXT = "outfit_context"
 PENDING_OUTFIT_SYNTHESIS_CONFIRMATION = "outfit_synthesis_confirmation"
 PENDING_OUTFIT_OPTION_SELECTION = "outfit_option_selection"
 PENDING_OUTFIT_USER_IMAGE_REQUIRED = "outfit_user_image_required"
+PENDING_RETOUCH_CONFIRMATION = "retouch_confirmation"
+
+# retouch intent
+INTENT_RETOUCH = "retouch"

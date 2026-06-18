@@ -8,6 +8,7 @@ from backend.app.rag.chatbot_rag.intent_classifier import get_intent
 from backend.app.rag.chatbot_rag.intent_keywords import (
     _extract_outfit_context_from_message,
     detect_question_category,
+    is_retouch_request,
 )
 from backend.app.rag.chatbot_rag.intents import (
     CATEGORY_HAIR,
@@ -21,6 +22,7 @@ from backend.app.rag.chatbot_rag.intents import (
     INTENT_OUTFIT_EVENT_COORDINATION,
     INTENT_OUTFIT_FIT_CHECK,
     INTENT_OUTFIT_RECOMMENDATION,
+    INTENT_RETOUCH,
     INTENT_SMALLTALK,
     INTENT_UNCLEAR,
     OUTFIT_INTENTS,
@@ -389,6 +391,17 @@ def classify_intent(state: ChatbotState) -> ChatbotState:
 
     target_type = _normalize_target_type(state.get("target_type"))
     category = target_type or detect_question_category(user_message)
+
+    # sim_image_url이 있고 직접 이미지 수정 요청이면 retouch로 선행 분기한다.
+    if state.get("sim_image_url") and is_retouch_request(user_message):
+        state["intent"] = INTENT_RETOUCH
+        state["intent_debug"] = {"classifier": "retouch_gate", "reason": "sim_image_url+retouch_keyword"}
+        state["category"] = category
+        state["detected_style"] = None
+        state["detected_style_is_recommended"] = False
+        state["needs_clarification"] = False
+        state["clarification_options"] = []
+        return state
 
     intent, intent_debug = get_intent(user_message)
     state["intent_debug"] = intent_debug
