@@ -8,14 +8,18 @@ from backend.app.rag.chatbot_rag.intent_classifier import get_intent
 from backend.app.rag.chatbot_rag.intent_keywords import (
     _extract_outfit_context_from_message,
     detect_question_category,
+    is_followup_recommendation,
+    is_memory_recall,
     is_retouch_request,
 )
 from backend.app.rag.chatbot_rag.intents import (
     CATEGORY_HAIR,
     CATEGORY_MAKEUP,
+    INTENT_FOLLOWUP_RECOMMENDATION,
     INTENT_GENERAL_FOLLOWUP,
     INTENT_GREETING,
     INTENT_IRRELEVANT,
+    INTENT_MEMORY_RECALL,
     INTENT_MISSING_ANALYSIS,
     INTENT_MOOD_CHOICE,
     INTENT_NOISE,
@@ -392,10 +396,32 @@ def classify_intent(state: ChatbotState) -> ChatbotState:
     target_type = _normalize_target_type(state.get("target_type"))
     category = target_type or detect_question_category(user_message)
 
+    # 대화 기억 질문 — RAG 없이 빠르게 처리
+    if is_memory_recall(user_message):
+        state["intent"] = INTENT_MEMORY_RECALL
+        state["intent_debug"] = {"classifier": "keyword_gate", "reason": "memory_recall_keyword"}
+        state["category"] = category
+        state["detected_style"] = None
+        state["detected_style_is_recommended"] = False
+        state["needs_clarification"] = False
+        state["clarification_options"] = []
+        return state
+
     # 직접 이미지 수정 요청이면 RAG를 타지 않고 retouch 전용 흐름으로 선행 분기한다.
     if is_retouch_request(user_message):
         state["intent"] = INTENT_RETOUCH
         state["intent_debug"] = {"classifier": "retouch_gate", "reason": "retouch_keyword"}
+        state["category"] = category
+        state["detected_style"] = None
+        state["detected_style_is_recommended"] = False
+        state["needs_clarification"] = False
+        state["clarification_options"] = []
+        return state
+
+    # 후속 추천 질문 — RAG 없이 previous_recommendations 기반으로 처리
+    if is_followup_recommendation(user_message):
+        state["intent"] = INTENT_FOLLOWUP_RECOMMENDATION
+        state["intent_debug"] = {"classifier": "keyword_gate", "reason": "followup_recommendation_keyword"}
         state["category"] = category
         state["detected_style"] = None
         state["detected_style_is_recommended"] = False
@@ -1244,5 +1270,91 @@ def run_outfit_synthesis(state: ChatbotState) -> ChatbotState:
         "used_filter": {},
         "skipped_rag": True,
         "skip_reason": "outfit_synthesis",
+    }
+    return state
+
+
+# ---------------------------------------------------------------------------
+# 대화 기억 / 후속 추천 노드
+# ---------------------------------------------------------------------------
+
+def answer_memory_recall(state: ChatbotState) -> ChatbotState:
+    """chat_history에서 가장 최근 user 발화를 찾아 그대로 알려준다."""
+    chat_history = state.get("chat_history") or []
+
+    last_user_msg: str | None = None
+    for msg in reversed(chat_history):
+        if msg.get("role") == "user":
+            last_user_msg = msg.get("content", "").strip()
+            break
+
+    if last_user_msg:
+        state["answer"] = f'방금 "{last_user_msg}"이라고 하셨어요.'
+    else:
+        state["answer"] = "이전 대화 기록이 없어서 기억하지 못해요."
+
+    state["retrieval_result"] = RetrievalResult(
+        query=state.get("user_message", ""),
+        documents=[],
+        retrieved_count=0,
+        fallback_stage=None,
+        used_filter={},
+    )
+    state["retrieval_info"] = {
+        "retrieved_count": 0,
+        "fallback_stage": "none",
+        "skipped_rag": True,
+        "skip_reason": "memory_recall",
+    }
+    return state
+
+
+def answer_followup_recommendation(state: ChatbotState) -> ChatbotState:
+    """previous_recommendations에서 아직 언급 안 된 대안 스타일을 안내한다."""
+    chat_history = state.get("chat_history") or []
+    previous_recommendations = state.get("previous_recommendations") or []
+    user_message = state.get("user_message", "")
+
+    category = state.get("category") or detect_question_category(user_message)
+
+    last_ai_answer = ""
+    for msg in reversed(chat_history):
+        if msg.get("role") == "assistant":
+            last_ai_answer = msg.get("content", "")
+            break
+
+    candidates = [r for r in previous_recommendations if r.get("category") == category]
+
+    alternatives = [
+        r for r in candidates
+        if not (r.get("style_name") and r["style_name"] in last_ai_answer)
+    ]
+
+    category_label = "메이크업" if category == CATEGORY_MAKEUP else "헤어스타일"
+
+    if alternatives:
+        names = [r.get("style_name", "") for r in alternatives[:3] if r.get("style_name")]
+        name_str = ", ".join(names)
+        state["answer"] = (
+            f"다른 방향으로는 {name_str}도 볼 수 있어요.\n"
+            f"각 {category_label}의 분위기가 조금씩 달라서 원하시는 느낌에 맞게 선택해 보세요."
+        )
+    elif candidates:
+        state["answer"] = "추천드린 스타일들이 이미 전부 안내된 것 같아요. 다른 점이 궁금하시면 말씀해 주세요!"
+    else:
+        state["answer"] = f"현재 추천 목록에 다른 {category_label}이 없어요. 원하시는 조건이 있으면 더 알려주세요!"
+
+    state["retrieval_result"] = RetrievalResult(
+        query=user_message,
+        documents=[],
+        retrieved_count=0,
+        fallback_stage=None,
+        used_filter={},
+    )
+    state["retrieval_info"] = {
+        "retrieved_count": 0,
+        "fallback_stage": "none",
+        "skipped_rag": True,
+        "skip_reason": "followup_recommendation",
     }
     return state

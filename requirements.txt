@@ -45,6 +45,10 @@
 #     → 실제론 4.10.0에서도 정상 작동 확인됨
 #   - mediapipe 0.10.9: protobuf<4 요구
 #     → protobuf 3.20.3으로 다운그레이드됨, TF도 해당 버전 허용
+#   - transformers==4.44.2: huggingface-hub<1.0 런타임 체크 요구
+#     → 실제 API 호환성 문제 없음. 설치 후 아래 파일에서 "huggingface-hub" 항목 제거 필요:
+#       anaconda3/envs/p310_pj_styleflow/Lib/site-packages/transformers/dependency_versions_check.py
+#       pkgs_to_check_at_runtime 리스트에서 "huggingface-hub" 줄 삭제
 # ============================================================
 # 주의: dlib, torch, torchvision, clip은 아래 목록에서 제외됨
 # ============================================================
@@ -216,7 +220,9 @@ langchain-chroma==1.1.0
 langchain-google-genai==4.2.5
 langchain-ollama==1.1.0
 langgraph==1.2.5
-sentence-transformers==5.6.0
+sentence-transformers==3.0.1
+transformers==4.44.2
+tokenizers==0.19.1
 youtube-transcript-api==1.2.4
 chromadb==1.5.9
 

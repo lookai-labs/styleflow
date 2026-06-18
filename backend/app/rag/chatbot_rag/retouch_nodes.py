@@ -16,6 +16,11 @@ from backend.app.rag.chatbot_rag.intents import (
     PENDING_RETOUCH_CONFIRMATION,
     PENDING_RETOUCH_IMAGE_REQUIRED,
 )
+from backend.app.rag.chatbot_rag.memory import (
+    extract_preferences_from_history,
+    extract_style_hints_from_history,
+    format_recent_turns,
+)
 from backend.app.rag.chatbot_rag.state import ChatbotState
 from backend.app.rag.rag_core.config import GEMINI_API_KEY, GEMINI_IMAGE_MODEL
 from backend.app.rag.rag_core.schemas import RetrievalResult
@@ -76,14 +81,45 @@ _CLEAR_HINTS = [
 ]
 
 
-def _source_image_url(state: ChatbotState) -> str | None:
+def resolve_retouch_source_image(state: ChatbotState) -> str | None:
+    """이미지 우선순위대로 원본 이미지 URL을 탐색한다."""
+    # 1. 현재 턴 image_url
+    if state.get("image_url"):
+        return state["image_url"]
+
+    # 2. pending_retouch에 저장된 source_image_url
+    pending = state.get("pending_retouch") or {}
+    if pending.get("source_image_url"):
+        return pending["source_image_url"]
+
+    # 3. sim_image_url (GAN 합성 결과)
+    if state.get("sim_image_url"):
+        return state["sim_image_url"]
+
+    # 4. chat_history에서 user_image_url / ai_image_url / retouch_result_image_url 탐색
+    for turn in reversed(state.get("chat_history") or []):
+        if turn.get("user_image_url"):
+            return turn["user_image_url"]
+        if turn.get("ai_image_url"):
+            return turn["ai_image_url"]
+        details = turn.get("details") or {}
+        if details.get("retouch_result_image_url"):
+            return details["retouch_result_image_url"]
+        pending_in_history = details.get("pending_retouch") or {}
+        if pending_in_history.get("source_image_url"):
+            return pending_in_history["source_image_url"]
+
+    # 5. user_profile 저장 이미지
     user_profile = state.get("user_profile") or {}
     return (
-        state.get("image_url")
-        or state.get("sim_image_url")
-        or user_profile.get("user_image_url")
+        user_profile.get("user_image_url")
         or user_profile.get("synthesized_image_url")
+        or user_profile.get("current_image_url")
+        or user_profile.get("analysis_image_url")
     )
+
+
+_source_image_url = resolve_retouch_source_image
 
 
 def _infer_target(text: str) -> str:
@@ -132,16 +168,23 @@ def _analyze_text_request(user_message: str, state: ChatbotState) -> tuple[str, 
     target = _infer_target(text)
     has_clear_hint = any(hint in text for hint in _CLEAR_HINTS)
 
+    # 모호한 요청이면 이전 대화 힌트로 보완
+    chat_history = state.get("chat_history") or []
+    history_hint = extract_style_hints_from_history(chat_history) if chat_history else ""
+    requested_change = f"{text} ({history_hint} 느낌 유지)" if history_hint else text
+
     if normalized in compact_ambiguous or not has_clear_hint:
-        return "ambiguous", {
+        # 이전 대화에서 힌트를 찾으면 모호함 해소
+        clarity = "clear" if history_hint else "ambiguous"
+        return clarity, {
             "target": target,
-            "requested_change": text,
-            "selected_style": None,
+            "requested_change": requested_change,
+            "selected_style": _selected_style(state, target) if clarity == "clear" else None,
         }
 
     return "clear", {
         "target": target,
-        "requested_change": text,
+        "requested_change": requested_change,
         "selected_style": _selected_style(state, target),
     }
 
@@ -259,6 +302,27 @@ def _build_retouch_prompt(payload: dict[str, Any]) -> str:
             "Keep the person's identity fully intact. Do not over-retouch."
         )
 
+    # 대화 기반 선호 반영
+    conv = payload.get("conversation_context") or {}
+    prefs = conv.get("user_preferences") or {}
+    if prefs.get("dislikes"):
+        parts.append(
+            "User has previously expressed dislikes — avoid: "
+            + "; ".join(prefs["dislikes"]) + "."
+        )
+    if prefs.get("style_direction"):
+        parts.append(
+            "Style direction from conversation: "
+            + ", ".join(prefs["style_direction"]) + "."
+        )
+    recent_turns = conv.get("recent_turns") or []
+    if recent_turns:
+        snippet = " / ".join(
+            f"{'User' if t['role'] == 'user' else 'AI'}: {t['content'][:60]}"
+            for t in recent_turns[-4:]
+        )
+        parts.append(f"Recent conversation context: {snippet}.")
+
     parts.append(
         "Hard constraints: preserve face shape, eyes, nose, mouth, expression, pose, and background. "
         "Do not over-smooth skin. Do not alter body shape. "
@@ -338,23 +402,59 @@ def analyze_retouch_request(state: ChatbotState) -> ChatbotState:
     return state
 
 
+_CLARIFICATION_HAIR_MSG = (
+    "헤어를 어떻게 수정하고 싶으신가요?\n\n"
+    "예를 들면:\n"
+    "- 앞머리를 더 자연스럽게\n"
+    "- 볼륨을 조금 더 살리기\n"
+    "- 컬감을 줄이기\n"
+    "- 추천받은 헤어스타일로 적용하기"
+)
+
+_CLARIFICATION_MAKEUP_MSG = (
+    "메이크업을 어떻게 수정하고 싶으신가요?\n\n"
+    "예를 들면:\n"
+    "- 눈을 더 또렷하게\n"
+    "- 립을 더 진하게\n"
+    "- 피부톤을 조금 밝게\n"
+    "- 전체적으로 더 화사하게"
+)
+
+_CLARIFICATION_DEFAULT_MSG = (
+    "어떤 부분을 어떻게 수정하고 싶으신가요?\n\n"
+    "예를 들면:\n"
+    "- 눈을 더 또렷하게\n"
+    "- 립을 더 진하게\n"
+    "- 앞머리를 자연스럽게\n"
+    "- 피부톤을 조금 밝게\n"
+    "- 메이크업을 더 화사하게"
+)
+
+
 def ask_retouch_clarification(state: ChatbotState) -> ChatbotState:
     user_profile = dict(state.get("user_profile") or {})
     pending_retouch = state.get("pending_retouch") or {
-        "source_image_url": _source_image_url(state),
+        "source_image_url": resolve_retouch_source_image(state),
         "retouch_request": state.get("retouch_request"),
         "original_user_message": state.get("user_message", ""),
     }
     user_profile["pending_retouch"] = pending_retouch
 
+    retouch_request = pending_retouch.get("retouch_request") or {}
+    target = retouch_request.get("target", "overall")
+
+    if target == "hair":
+        answer = _CLARIFICATION_HAIR_MSG
+    elif target == "makeup":
+        answer = _CLARIFICATION_MAKEUP_MSG
+    else:
+        answer = _CLARIFICATION_DEFAULT_MSG
+
     state["user_profile"] = user_profile
-    state["answer"] = "어떤 부분을 리터치할까요?"
+    state["answer"] = answer
     state["pending_selection"] = PENDING_RETOUCH_CLARIFICATION
-    state["selection"] = {
-        "type": PENDING_RETOUCH_CLARIFICATION,
-        "options": _CLARIFICATION_OPTIONS,
-    }
-    state["clarification_options"] = [option["label"] for option in _CLARIFICATION_OPTIONS]
+    state["selection"] = None  # 자유 입력 — 버튼 선택지 없음
+    state["clarification_options"] = []
     _set_no_rag(state, "pending_retouch_clarification")
     return state
 
@@ -393,6 +493,10 @@ def build_retouch_prompt_payload(state: ChatbotState) -> dict[str, Any]:
     source_image_url = pending_retouch.get("source_image_url") or _source_image_url(state)
     retouch_request = pending_retouch.get("retouch_request") or state.get("retouch_request") or {}
 
+    chat_history = state.get("chat_history") or []
+    preferences = extract_preferences_from_history(chat_history)
+    recent_turns = format_recent_turns(chat_history)
+
     return {
         "source_image_url": source_image_url,
         "user_profile": {
@@ -415,6 +519,10 @@ def build_retouch_prompt_payload(state: ChatbotState) -> dict[str, Any]:
             "요청한 헤어 또는 메이크업 요소 외에는 최대한 유지한다.",
             "자연스럽고 실제 촬영된 사진처럼 보이게 한다.",
         ],
+        "conversation_context": {
+            "recent_turns": recent_turns,
+            "user_preferences": preferences,
+        },
     }
 
 
@@ -494,14 +602,28 @@ def handle_retouch_image_required(state: ChatbotState) -> ChatbotState:
     return state
 
 
+_CONFIRM_NATURAL = {"응", "좋아", "진행해줘", "네", "ㅇㅋ", "오케이", "ok", "yes", "그래", "해줘", "진행할게", "해주세요", "해줘요", "당연", "빨리"}
+_CANCEL_NATURAL = {"취소", "아니", "그만", "no", "싫어", "됐어", "안 해", "안해", "하지마", "하지 마"}
+
+
 def handle_retouch_confirmation(state: ChatbotState) -> ChatbotState:
     selected_option = state.get("selected_option") or {}
     selected_id = selected_option.get("id")
+    user_message = (state.get("user_message") or "").strip().lower()
 
     state["pending_selection"] = None
     state["selection"] = None
 
-    if selected_id in {"confirm_retouch", "retouch_yes"}:
+    is_confirm = (
+        selected_id in {"confirm_retouch", "retouch_yes"}
+        or any(word in user_message for word in _CONFIRM_NATURAL)
+    )
+    is_cancel = (
+        selected_id in {"cancel_retouch", "retouch_no"}
+        or any(word in user_message for word in _CANCEL_NATURAL)
+    )
+
+    if is_confirm and not is_cancel:
         state["retouch_action"] = "confirm"
     else:
         state["retouch_action"] = "cancel"

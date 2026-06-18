@@ -419,7 +419,18 @@ def ai_chat(request):
     previous_analysis = request.data.get('previous_analysis') or (
         "둥근형 얼굴에 어울리는 레이어드 웨이브 헤어스타일과 봄 웜톤에 맞는 코랄 메이크업을 추천드립니다."
     )
-    chat_history = request.data.get('chat_history') or []
+
+    # DB에서 이전 대화 이력 로드 (created_at 오름차순 → 과거→최신)
+    from backend.app.rag.chatbot_rag.memory import db_rows_to_chat_history, MAX_CHAT_HISTORY_TURNS
+    db_rows = list(
+        UserFeedback.objects
+        .filter(user_id=request.user.id)
+        .exclude(user_chat__isnull=True)
+        .order_by('-created_at')
+        .values('user_chat', 'ai_chat')[:MAX_CHAT_HISTORY_TURNS]
+    )[::-1]  # 역순 → 오름차순 복원
+    chat_history = db_rows_to_chat_history(db_rows) or (request.data.get('chat_history') or [])
+
     user_profile = request.data.get('user_profile') or {}
     selected_option = request.data.get('selected_option') or None
     previous_recommendations = request.data.get('previous_recommendations') or _CHATBOT_DUMMY_RECOMMENDATIONS

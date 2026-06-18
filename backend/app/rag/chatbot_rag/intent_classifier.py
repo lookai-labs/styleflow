@@ -5,9 +5,11 @@ from typing import Any
 from backend.app.rag.chatbot_rag.intent_keywords import get_intent_by_keyword
 from backend.app.rag.chatbot_rag.intents import (
     INTENT_COMPARISON,
+    INTENT_FOLLOWUP_RECOMMENDATION,
     INTENT_GREETING,
     INTENT_IRRELEVANT,
     INTENT_MAINTENANCE,
+    INTENT_MEMORY_RECALL,
     INTENT_MOOD_SELECTION,
     INTENT_NOISE,
     INTENT_SMALLTALK,
@@ -25,9 +27,11 @@ KEYWORD_FIRST_INTENTS = {
     INTENT_MAINTENANCE,
     INTENT_COMPARISON,
     INTENT_MOOD_SELECTION,
-    INTENT_STYLE_FIT,      # keyword가 명확히 매치한 경우 semantic이 오버라이드하지 않도록
-    INTENT_STYLE_EXPLANATION,  # 지시어+설명 패턴은 키워드 감지 우선
+    INTENT_STYLE_FIT,           # keyword가 명확히 매치한 경우 semantic이 오버라이드하지 않도록
+    INTENT_STYLE_EXPLANATION,   # 지시어+설명 패턴은 키워드 감지 우선
     INTENT_STYLE_RETOUCH,
+    INTENT_MEMORY_RECALL,       # 대화 기억 질문 — keyword로 명확히 잡힘
+    INTENT_FOLLOWUP_RECOMMENDATION,  # 후속 추천 질문 — keyword로 명확히 잡힘
     INTENT_IRRELEVANT,
     INTENT_GREETING,
     INTENT_SMALLTALK,

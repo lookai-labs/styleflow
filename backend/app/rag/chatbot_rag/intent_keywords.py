@@ -4,9 +4,11 @@ from backend.app.rag.chatbot_rag.intents import (
     CATEGORY_HAIR,
     CATEGORY_MAKEUP,
     INTENT_COMPARISON,
+    INTENT_FOLLOWUP_RECOMMENDATION,
     INTENT_GREETING,
     INTENT_IRRELEVANT,
     INTENT_MAINTENANCE,
+    INTENT_MEMORY_RECALL,
     INTENT_MOOD_SELECTION,
     INTENT_NOISE,
     INTENT_OUTFIT_EVENT_COORDINATION,
@@ -570,6 +572,19 @@ RETOUCH_EXPLICIT_KEYWORDS = [
     "사진 바꿔",
     "이미지 수정",
     "사진 수정",
+    # 욕구형 표현 — "수정하고 싶어" 등
+    "수정하고 싶어",
+    "수정하고 싶",
+    "바꾸고 싶어",
+    "바꾸고 싶",
+    "고치고 싶어",
+    "고치고 싶",
+    "조정하고 싶어",
+    "조정하고 싶",
+    "보정하고 싶어",
+    "보정하고 싶",
+    "적용하고 싶어",
+    "합성하고 싶어",
 ]
 
 # 직접 수정 요청 동사
@@ -603,13 +618,63 @@ RETOUCH_STYLE_TARGET_PHRASES = [
     "추천된",
 ]
 
-# 이미지/사진을 지칭하는 명사 (동사와 조합 시만 retouch로 판별)
+# 이미지/사진 또는 뷰티 부위 명사 (동사와 조합 시 retouch로 판별)
 RETOUCH_IMAGE_NOUNS = [
     "이미지",
     "사진",
     "합성",
     "시뮬레이션",
+    # 뷰티 부위 명사
+    "헤어",
+    "머리",
+    "앞머리",
+    "메이크업",
+    "화장",
+    "립",
+    "눈",
+    "피부톤",
 ]
+
+
+_MEMORY_RECALL_PHRASES = [
+    "방금 뭐라고 했지",
+    "방금 뭐라고 했어",
+    "아까 내가 뭐라고",
+    "내가 방금 뭐라고",
+    "방금 한 말",
+    "아까 한 말",
+    "내가 직전에 뭐라고",
+    "전에 뭐라고 했지",
+    "방금 말한 게",
+    "방금 말한 거",
+    "방금 한 게",
+]
+
+
+def is_memory_recall(message: str) -> bool:
+    msg = message.strip().lower()
+    return any(phrase in msg for phrase in _MEMORY_RECALL_PHRASES)
+
+
+_FOLLOWUP_RECOMMENDATION_PHRASES = [
+    "다른 메이크업",
+    "다른 헤어",
+    "다른 스타일",
+    "다른 건",
+    "다른 거",
+    "다른 것도",
+    "또 뭐 있어",
+    "또 추천",
+    "다른 추천",
+    "다른 것도 추천",
+    "그럼 다른",
+    "또 다른",
+]
+
+
+def is_followup_recommendation(message: str) -> bool:
+    msg = message.strip().lower()
+    return any(phrase in msg for phrase in _FOLLOWUP_RECOMMENDATION_PHRASES)
 
 
 def is_retouch_request(message: str) -> bool:
@@ -733,12 +798,20 @@ def get_intent_by_keyword(message: str) -> str:
     if normalized_message in SMALLTALK_KEYWORDS:
         return INTENT_SMALLTALK
 
+    # 대화 기억 질문 — 다른 intent보다 우선
+    if is_memory_recall(normalized_message):
+        return INTENT_MEMORY_RECALL
+
     # 명확한 비교 구조는 maintenance/styling 키워드보다 우선한다.
     if _has_explicit_comparison(normalized_message):
         return INTENT_COMPARISON
 
     if is_retouch_request(normalized_message):
         return INTENT_STYLE_RETOUCH
+
+    # 후속 추천 질문
+    if is_followup_recommendation(normalized_message):
+        return INTENT_FOLLOWUP_RECOMMENDATION
 
     # outfit 키워드가 명시적으로 있으면 mood_selection보다 먼저 잡는다.
     if _is_outfit_request(normalized_message):

@@ -44,3 +44,7 @@ PENDING_RETOUCH_IMAGE_REQUIRED = "retouch_image_required"
 # retouch intent
 INTENT_STYLE_RETOUCH = "style_retouch"
 INTENT_RETOUCH = INTENT_STYLE_RETOUCH
+
+# memory / followup intents
+INTENT_MEMORY_RECALL = "memory_recall"
+INTENT_FOLLOWUP_RECOMMENDATION = "followup_recommendation"

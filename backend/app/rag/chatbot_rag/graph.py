@@ -24,6 +24,8 @@ from backend.app.rag.chatbot_rag.retouch_nodes import (
 )
 from backend.app.rag.chatbot_rag.nodes import (
     analyze_outfit_image,
+    answer_followup_recommendation,
+    answer_memory_recall,
     ask_clarification,
     ask_mood_selection,
     ask_outfit_context_selection,
@@ -48,6 +50,8 @@ from backend.app.rag.chatbot_rag.nodes import (
 from backend.app.rag.chatbot_rag.intents import (
     CATEGORY_HAIR,
     CATEGORY_MAKEUP,
+    INTENT_FOLLOWUP_RECOMMENDATION,
+    INTENT_MEMORY_RECALL,
     INTENT_MOOD_CHOICE,
     INTENT_MOOD_SELECTION,
     INTENT_OUTFIT_FIT_CHECK,
@@ -94,7 +98,7 @@ def _route_by_pending(state: ChatbotState) -> str:
         return "handle_outfit_user_image_pending"
     if pending == PENDING_RETOUCH_CLARIFICATION:
         return "handle_retouch_clarification"
-    if pending == PENDING_RETOUCH_CONFIRMATION and selected_option:
+    if pending == PENDING_RETOUCH_CONFIRMATION:
         return "handle_retouch_confirmation"
     if pending == PENDING_RETOUCH_IMAGE_REQUIRED:
         return "handle_retouch_image_required"
@@ -154,8 +158,16 @@ def _route_after_retouch_image_required(state: ChatbotState) -> str:
 def route_after_intent(state: ChatbotState) -> str:
     intent = state.get("intent")
 
+    # 대화 기억 질문 — 최우선
+    if intent == INTENT_MEMORY_RECALL:
+        return "answer_memory_recall"
+
     if intent == INTENT_RETOUCH:
         return "analyze_retouch_request"
+
+    # 후속 추천 질문 — needs_clarification보다 먼저
+    if intent == INTENT_FOLLOWUP_RECOMMENDATION:
+        return "answer_followup_recommendation"
 
     # style_explanation: selected_recommendation이 있으면 RAG, 없으면 static 안내
     if intent == INTENT_STYLE_EXPLANATION:
@@ -245,6 +257,10 @@ def build_chatbot_graph():
     graph.add_node("check_user_image_for_synthesis", check_user_image_for_synthesis)
     graph.add_node("handle_outfit_user_image_pending", handle_outfit_user_image_pending)
     graph.add_node("run_outfit_synthesis", run_outfit_synthesis)
+
+    # 대화 기억 / 후속 추천 노드
+    graph.add_node("answer_memory_recall", answer_memory_recall)
+    graph.add_node("answer_followup_recommendation", answer_followup_recommendation)
 
     # 리터칭 노드
     graph.add_node("analyze_retouch_request", analyze_retouch_request)
@@ -349,7 +365,9 @@ def build_chatbot_graph():
         "classify_intent",
         route_after_intent,
         {
+            "answer_memory_recall": "answer_memory_recall",
             "analyze_retouch_request": "analyze_retouch_request",
+            "answer_followup_recommendation": "answer_followup_recommendation",
             "ask_clarification": "ask_clarification",
             "ask_mood_selection": "ask_mood_selection",
             "ask_outfit_context_selection": "ask_outfit_context_selection",
@@ -411,6 +429,8 @@ def build_chatbot_graph():
     graph.add_edge("analyze_outfit_image", "generate_outfit_answer")
 
     # update_memory로 수렴하는 엣지들
+    graph.add_edge("answer_memory_recall", "update_memory")
+    graph.add_edge("answer_followup_recommendation", "update_memory")
     graph.add_edge("ask_retouch_clarification", "update_memory")
     graph.add_edge("ask_retouch_confirmation", "update_memory")
     graph.add_edge("ask_retouch_image_required", "update_memory")
