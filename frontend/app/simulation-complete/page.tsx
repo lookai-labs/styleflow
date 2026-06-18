@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -30,6 +30,8 @@ export default function SimulationCompletePage() {
   const authorized = useRequireAuth();
   const [finalResult, setFinalResult] = useState<FinalResult | null>(null);
   const [savedSimResultId, setSavedSimResultId] = useState<number | null>(null);
+  const [isSaved, setIsSaved] = useState(false);
+  const autoSaveCalledRef = useRef(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("styleflow_final_result");
@@ -39,6 +41,39 @@ export default function SimulationCompletePage() {
       } catch {}
     }
   }, []);
+
+  /* ── finalResult 로드 직후 SimulationResult 자동 생성 (is_saved=false) ── */
+  useEffect(() => {
+    if (!finalResult || autoSaveCalledRef.current) return;
+    autoSaveCalledRef.current = true;
+
+    const afFilename = (finalResult.afterImage ?? '').split('/').pop() ?? '';
+    const faceDataUrl = finalResult.beforeImage?.startsWith('data:')
+      ? finalResult.beforeImage
+      : localStorage.getItem('styleflow_face_image') ?? '';
+
+    if (!faceDataUrl || !afFilename || !faceDataUrl.startsWith('data:')) return;
+
+    const [header, base64] = faceDataUrl.split(',');
+    const mime = header.match(/:(.*?);/)?.[1] ?? 'image/jpeg';
+    const binary = atob(base64);
+    const arr = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
+    const blob = new Blob([arr], { type: mime });
+
+    const formData = new FormData();
+    formData.append('face_image', new File([blob], 'face.jpg', { type: mime }));
+    formData.append('after_image_filename', afFilename);
+    formData.append('is_saved', 'false');
+    if (finalResult.completedStyles.includes('makeup'))
+      formData.append('makeup_name', finalResult.styleNames?.['makeup'] ?? '');
+    if (finalResult.completedStyles.includes('hair'))
+      formData.append('hair_name', finalResult.styleNames?.['hair'] ?? '');
+
+    api.post('/simulate/save/', formData)
+      .then((res) => setSavedSimResultId(res.data.id ?? null))
+      .catch((e) => console.error('[simulation-complete] 자동 기록 실패:', e));
+  }, [finalResult]);
 
   const completedSteps = finalResult?.completedStyles ?? ["makeup", "hair"];
   const beforeImage    = finalResult?.beforeImage ?? FALLBACK_BEFORE;
@@ -70,32 +105,17 @@ export default function SimulationCompletePage() {
   };
 
   const handleSave = async () => {
+    if (isSaved) {
+      toast.info('이미 저장되었습니다.');
+      return;
+    }
+    if (!savedSimResultId) {
+      toast.error('저장 준비 중입니다. 잠시 후 다시 시도해 주세요.');
+      return;
+    }
     try {
-      const afterFilename = afterImage.split('/').pop() ?? '';
-      const faceDataUrl = beforeImage.startsWith('data:')
-        ? beforeImage
-        : localStorage.getItem('styleflow_face_image') ?? '';
-
-      if (!faceDataUrl || !afterFilename) {
-        toast.error('저장에 필요한 이미지가 없습니다.');
-        return;
-      }
-
-      const [header, base64] = faceDataUrl.split(',');
-      const mime = header.match(/:(.*?);/)?.[1] ?? 'image/jpeg';
-      const binary = atob(base64);
-      const arr = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
-      const blob = new Blob([arr], { type: mime });
-
-      const formData = new FormData();
-      formData.append('face_image', new File([blob], 'face.jpg', { type: mime }));
-      formData.append('after_image_filename', afterFilename);
-      if (completedSteps.includes('makeup')) formData.append('makeup_name', finalResult?.styleNames?.['makeup'] ?? '');
-      if (completedSteps.includes('hair'))   formData.append('hair_name', finalResult?.styleNames?.['hair'] ?? '');
-
-      const res = await api.post('/simulate/save/', formData);
-      setSavedSimResultId(res.data.id ?? null);
+      await api.patch(`/simulate/save/${savedSimResultId}/`);
+      setIsSaved(true);
       toast.success('마이홈에 저장되었습니다');
     } catch {
       toast.error('저장에 실패했습니다. 다시 시도해 주세요.');
@@ -145,8 +165,13 @@ export default function SimulationCompletePage() {
 
         <div className="space-y-4">
           <div className="grid md:grid-cols-2 gap-4">
-            <Button onClick={handleSave} className="bg-black text-white hover:bg-gray-800 py-6 text-lg">
-              <Save className="mr-2 h-5 w-5" />결과 저장
+            <Button
+              onClick={handleSave}
+              disabled={isSaved}
+              className="bg-black text-white hover:bg-gray-800 py-6 text-lg disabled:opacity-60"
+            >
+              <Save className="mr-2 h-5 w-5" />
+              {isSaved ? '저장됨' : '결과 저장'}
             </Button>
             <Button onClick={() => router.push("/my-home")} className="bg-black text-white hover:bg-gray-800 py-6 text-lg">
               <Home className="mr-2 h-5 w-5" />마이홈으로 이동

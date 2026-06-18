@@ -96,8 +96,8 @@ function SimulationFlowInner() {
   const [makeupResultImage, setMakeupResultImage] = useState<string>("");
   // 분석 결과 (스타일 이름 매핑용)
   const [analysisResult, setAnalysisResult] = useState<{
-    hair_mappings?: Array<{ id: number; style_name: string }>;
-    makeup_mappings?: Array<{ id: number; style_name: string }>;
+    hair_mappings?: Array<{ id: number; style_name: string; style_code?: string }>;
+    makeup_mappings?: Array<{ id: number; style_name: string; style_code?: string }>;
   } | null>(null);
   // 단계별 확정된 스타일 이름
   const [selectedStyleNames, setSelectedStyleNames] = useState<Partial<Record<StyleType, string>>>({});

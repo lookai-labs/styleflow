@@ -217,18 +217,32 @@ class SavedResultViewSet(viewsets.ModelViewSet):
 
 # ── 기능 뷰 ──────────────────────────────────────────────────────────────
 
+# ChromaDB metadata와 정확히 일치해야 RAG 필터가 동작함
 _FACE_PROPORTION_MAP = {
-    'upper': '상정이 긴 비율',
-    'middle': '중정이 긴 비율',
-    'lower': '하정이 긴 비율',
-    'golden': '황금 비율',
+    'upper': '상안부_긴형',
+    'middle': '중안부_긴형',
+    'lower': '하안부_긴형',
+    'golden': '균형',
 }
 
 _PERSONAL_COLOR_MAP = {
-    'spring': '봄 웜톤',
-    'summer': '여름 쿨톤',
-    'fall': '가을 웜톤',
-    'winter': '겨울 쿨톤',
+    'spring': '봄웜',
+    'summer': '여름쿨',
+    'fall': '가을웜',
+    'winter': '겨울쿨',
+}
+
+_GENDER_MAP = {
+    'female': '여성',
+    'male': '남성',
+}
+
+_FACE_SHAPE_MAP = {
+    'round': '둥근형',
+    'oval': '계란형',
+    'square': '각진형',
+    'heart': '역삼각형',
+    'long': '장방형',
 }
 
 # style_code, makeup_group 은 추후 MakeupStyle 모델 필드로 교체 예정
@@ -263,7 +277,7 @@ _DUMMY_HAIR_RECOMMENDATIONS = [
 ]
 
 _DUMMY_MAKEUP_MALE = [
-    {'style_name': '봄웜 내추럴 메이크업', 'style_code': 'mk-m-spring-warm', 'makeup_group': 'male_spring_warm'},
+    {'style_name': '봄웜 내추럴 메이크업', 'style_code': 'mk-m-sp-natural', 'makeup_group': 'male_spring_natural'},
 ]
 
 
@@ -281,8 +295,11 @@ def analyze(request):
     skin_tone = request.data.get('skin_tone', 'spring')
     gender = getattr(request.user, 'gender', 'female')
 
-    face_proportion = _FACE_PROPORTION_MAP.get(face_point, '황금 비율')
-    personal_color = _PERSONAL_COLOR_MAP.get(skin_tone, '봄 웜톤')
+    # ChromaDB metadata와 일치하는 한국어 값으로 변환 (RAG 필터에 사용)
+    rag_gender = _GENDER_MAP.get(gender, '여성')
+    rag_face_shape = _FACE_SHAPE_MAP.get(face_shape, face_shape)
+    face_proportion = _FACE_PROPORTION_MAP.get(face_point, '균형')
+    personal_color = _PERSONAL_COLOR_MAP.get(skin_tone, '봄웜')
 
     # ① 이미지 저장
     face_image = request.FILES.get('face_image')
@@ -309,12 +326,12 @@ def analyze(request):
     recommended_hair_styles = _DUMMY_HAIR_RECOMMENDATIONS
     recommended_makeup_styles = _DUMMY_MAKEUP_MALE if gender == 'male' else _DUMMY_MAKEUP_STYLES
 
-    # ③ RAG 호출
+    # ③ RAG 호출 (ChromaDB metadata와 일치하는 한국어 값 사용)
     try:
         from backend.app.rag.analysis_rag.service import generate_analysis_result
         result = generate_analysis_result(
-            gender=gender,
-            face_shape=face_shape,
+            gender=rag_gender,
+            face_shape=rag_face_shape,
             face_proportion=face_proportion,
             recommended_hair_styles=recommended_hair_styles,
             personal_color=personal_color,
@@ -350,7 +367,10 @@ def analyze(request):
     makeup_mappings = []
     for style in recommended_makeup_styles:
         style_name = style['style_name']
+        style_code = style.get('style_code', '')
         makeup_style_obj = MakeupStyle.objects.filter(style_name=style_name).first()
+        if not style_code and makeup_style_obj:
+            style_code = makeup_style_obj.style_code or ''
         mapping = StyleMappingList.objects.create(
             user_id=request.user.id,
             analysis_session=session,
@@ -361,13 +381,14 @@ def analyze(request):
         makeup_mappings.append({
             'id': mapping.id,
             'style_name': style_name,
+            'style_code': style_code,
             'image_url': makeup_style_obj.image_url if makeup_style_obj else '',
         })
 
     return Response({
         'hair_analysis_summary': result['hair_analysis_summary'],
         'makeup_analysis_summary': result.get('makeup_analysis_summary'),
-        'face_shape': face_shape,
+        'face_shape': rag_face_shape,
         'skin_tone': skin_tone,
         'personal_color': personal_color,
         'analysis_session_id': session.id,
@@ -388,10 +409,11 @@ def ai_chat(request):
     if not message:
         return Response({'error': '메시지를 입력해주세요.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    face_shape = request.data.get('face_shape', 'round')
-    personal_color = request.data.get('personal_color', '봄 웜톤')
-    gender = getattr(request.user, 'gender', 'female')
-    face_proportion = _FACE_PROPORTION_MAP.get('golden', '황금 비율')
+    face_shape = request.data.get('face_shape', '둥근형')
+    personal_color = request.data.get('personal_color', '봄웜')
+    gender_raw = getattr(request.user, 'gender', 'female')
+    gender = _GENDER_MAP.get(gender_raw, '여성')
+    face_proportion = _FACE_PROPORTION_MAP.get('golden', '균형')
 
     previous_analysis = request.data.get('previous_analysis') or (
         "둥근형 얼굴에 어울리는 레이어드 웨이브 헤어스타일과 봄 웜톤에 맞는 코랄 메이크업을 추천드립니다."
@@ -446,6 +468,8 @@ def simulate_save(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    is_saved = str(request.data.get('is_saved', 'false')).lower() not in ('false', '0', '')
+
     save_dir = os.path.join(settings.MEDIA_ROOT, 'analyses')
     os.makedirs(save_dir, exist_ok=True)
     ext = os.path.splitext(face_image.name)[1] or '.png'
@@ -462,13 +486,26 @@ def simulate_save(request):
     sim = SimulationResult(
         user_id=request.user.id,
         analysis_session=session,
-        is_saved=True,
+        is_saved=is_saved,
         generated_image_path=f'simulations/{after_image_filename}',
     )
     sim.save()
 
     serializer = SimulationResultSerializer(sim, context={'request': request})
     return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['PATCH'])
+def simulate_save_mark(request, pk):
+    """기존 SimulationResult를 마이홈 저장 상태(is_saved=True)로 업데이트."""
+    try:
+        sim = SimulationResult.objects.get(id=pk, user_id=request.user.id)
+    except SimulationResult.DoesNotExist:
+        return Response({'error': '결과를 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
+    sim.is_saved = True
+    sim.save()
+    serializer = SimulationResultSerializer(sim, context={'request': request})
+    return Response(serializer.data)
 
 
 @api_view(['POST'])
@@ -478,6 +515,7 @@ def feedback_chat(request):
     ai_chat = request.data.get('ai_chat', '')
     target_type = request.data.get('target_type', 'makeup')
     simulation_result_id = request.data.get('simulation_result_id')
+    applied_style_key = request.data.get('applied_style_key') or ''
 
     sim_result = None
     if simulation_result_id:
@@ -492,6 +530,7 @@ def feedback_chat(request):
         target_type=target_type if target_type in ('hair', 'makeup') else 'makeup',
         user_chat=user_chat,
         ai_chat=ai_chat,
+        applied_style_key=applied_style_key,
     )
 
     return Response({'ok': True}, status=status.HTTP_201_CREATED)

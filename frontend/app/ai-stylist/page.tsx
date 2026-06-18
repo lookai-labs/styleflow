@@ -37,8 +37,8 @@ type ConsultData = {
   currentStyleIndex: number;
   styleName?: string;
   simulationResultId?: number | null;
-  hairMappings?: Array<{ id: number; style_name: string }>;
-  makeupMappings?: Array<{ id: number; style_name: string }>;
+  hairMappings?: Array<{ id: number; style_name: string; style_code?: string }>;
+  makeupMappings?: Array<{ id: number; style_name: string; style_code?: string }>;
   faceShape?: string | null;
   personalColor?: string | null;
   hairSummary?: string | null;
@@ -201,8 +201,8 @@ export default function AIStylistPage() {
 
     const res = await api.post("/ai-chat/", {
       message,
-      face_shape: consultData?.faceShape ?? "round",
-      personal_color: consultData?.personalColor ?? "봄 웜톤",
+      face_shape: consultData?.faceShape ?? "둥근형",
+      personal_color: consultData?.personalColor ?? "봄웜",
       previous_analysis: previousAnalysis,
       previous_recommendations: previousRecommendations,
       chat_history: chatHistory,
@@ -219,11 +219,14 @@ export default function AIStylistPage() {
     setUserProfile(data.updated_user_profile ?? {});
 
     const targetType = (consultData?.style?.split(",")[0] ?? "makeup") as "hair" | "makeup";
+    const mappings = targetType === "hair" ? consultData?.hairMappings : consultData?.makeupMappings;
+    const appliedStyleKey = mappings?.[0]?.style_code ?? null;
     api.post("/feedback/chat/", {
       user_chat: userMessage,
       ai_chat: data.reply,
       target_type: targetType,
       simulation_result_id: consultData?.simulationResultId ?? null,
+      applied_style_key: appliedStyleKey,
     }).catch((e) => console.error("[AI Stylist] feedback 저장 실패:", e?.response?.data ?? e));
 
     setTimeout(() => {
