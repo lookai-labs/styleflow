@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+import logging
+import os
+import uuid
+from pathlib import Path
 from typing import Any
+
+import requests as _requests
+from django.conf import settings
+from google import genai
+from google.genai import types
 
 from backend.app.rag.chatbot_rag.intents import (
     PENDING_RETOUCH_CLARIFICATION,
@@ -8,7 +17,10 @@ from backend.app.rag.chatbot_rag.intents import (
     PENDING_RETOUCH_IMAGE_REQUIRED,
 )
 from backend.app.rag.chatbot_rag.state import ChatbotState
+from backend.app.rag.rag_core.config import GEMINI_API_KEY, GEMINI_IMAGE_MODEL
 from backend.app.rag.rag_core.schemas import RetrievalResult
+
+logger = logging.getLogger(__name__)
 
 
 def _empty_retrieval(query: str) -> RetrievalResult:
@@ -138,6 +150,119 @@ def _set_no_rag(state: ChatbotState, reason: str) -> None:
     state["retrieval_result"] = _empty_retrieval(state.get("user_message", ""))
     state["retrieval_info"] = {**_EMPTY_INFO, "skip_reason": reason}
 
+
+# ---------------------------------------------------------------------------
+# Gemini image editing helpers
+# ---------------------------------------------------------------------------
+
+def _download_image(url: str) -> tuple[bytes, str]:
+    """Download image bytes from URL, with local media path shortcut."""
+    media_url: str = settings.MEDIA_URL        # e.g. "/media/"
+    media_root: str = str(settings.MEDIA_ROOT)
+
+    # Resolve local Django media paths without an HTTP round-trip
+    local_path: str | None = None
+    if url.startswith(media_url):
+        local_path = os.path.join(media_root, url[len(media_url):])
+    else:
+        for host in ("http://127.0.0.1:8000", "http://localhost:8000", "http://0.0.0.0:8000"):
+            if url.startswith(host + media_url):
+                local_path = os.path.join(media_root, url[len(host + media_url):])
+                break
+
+    if local_path and os.path.exists(local_path):
+        with open(local_path, "rb") as f:
+            data = f.read()
+        if local_path.lower().endswith(".png"):
+            return data, "image/png"
+        if local_path.lower().endswith(".webp"):
+            return data, "image/webp"
+        return data, "image/jpeg"
+
+    resp = _requests.get(url, timeout=30)
+    resp.raise_for_status()
+    mime = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+    return resp.content, mime
+
+
+def _build_retouch_prompt(payload: dict[str, Any]) -> str:
+    req = payload.get("retouch_request", {})
+    target = req.get("target", "overall")
+    change = req.get("requested_change", "")
+    selected = req.get("selected_style") or {}
+    up = payload.get("user_profile", {})
+
+    target_label = {
+        "hair": "hairstyle",
+        "makeup": "makeup",
+        "partial": "partial beauty",
+        "overall": "overall beauty",
+    }.get(target, "overall beauty")
+
+    parts = [
+        "Portrait photo of a real person.",
+    ]
+
+    gender_map = {"남성": "male", "여성": "female"}
+    if up.get("gender"):
+        parts.append(f"Gender: {gender_map.get(up['gender'], up['gender'])}.")
+    if up.get("face_shape"):
+        parts.append(f"Face shape: {up['face_shape']}.")
+    if up.get("personal_color"):
+        parts.append(f"Personal color season: {up['personal_color']}.")
+
+    if selected.get("style_name"):
+        parts.append(f"Applied {target_label}: {selected['style_name']}.")
+
+    parts.append(f"Style change — {target_label}: {change}.")
+    parts.append(
+        "Natural, realistic photo quality. "
+        "Face structure, expression, and background unchanged. "
+        "Skin tone not overly altered."
+    )
+
+    return " ".join(parts)
+
+
+def _save_image_to_media(image_data: bytes, mime_type: str) -> str:
+    """Save image to MEDIA_ROOT/retouches/ and return the relative URL."""
+    ext = "png" if "png" in mime_type else ("webp" if "webp" in mime_type else "jpg")
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    save_dir = Path(settings.MEDIA_ROOT) / "retouches"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    (save_dir / filename).write_bytes(image_data)
+    return f"{settings.MEDIA_URL}retouches/{filename}"
+
+
+def _call_gemini_image_edit(payload: dict[str, Any]) -> str:
+    """Generate a retouched image via Gemini image model and return the saved media URL."""
+    prompt_text = _build_retouch_prompt(payload)
+
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options={"api_version": "v1beta"},
+    )
+
+    response = client.models.generate_content(
+        model=GEMINI_IMAGE_MODEL,
+        contents=prompt_text,
+        config=types.GenerateContentConfig(
+            response_modalities=["IMAGE"],
+            candidate_count=1,
+        ),
+    )
+
+    for part in response.candidates[0].content.parts:
+        if part.inline_data:
+            mime_type = part.inline_data.mime_type or "image/png"
+            return _save_image_to_media(part.inline_data.data, mime_type)
+
+    raise ValueError("Gemini 이미지 응답에서 이미지를 찾을 수 없습니다.")
+
+
+# ---------------------------------------------------------------------------
+# Retouch flow nodes
+# ---------------------------------------------------------------------------
 
 def analyze_retouch_request(state: ChatbotState) -> ChatbotState:
     user_message = state.get("user_message", "")
@@ -339,14 +464,22 @@ def run_style_retouch(state: ChatbotState) -> ChatbotState:
     if not source_image_url:
         return ask_retouch_image_required(state)
 
-    result_url = "stub://retouch-result"
-    state["retouch_prompt_payload"] = payload
-    state["retouch_result_image_url"] = result_url
-    state["retouched_image_url"] = result_url
-    state["answer"] = "리터치 결과 이미지를 생성했습니다. 현재는 이미지 생성 모델 연결 전이라 stub 결과입니다."
-    state["retouch_action"] = None
-    clear_pending_retouch(state)
-    _set_no_rag(state, "retouch_synthesis_stub")
+    try:
+        result_url = _call_gemini_image_edit(payload)
+        state["retouch_prompt_payload"] = payload
+        state["retouch_result_image_url"] = result_url
+        state["retouched_image_url"] = result_url
+        state["answer"] = "리터치 결과 이미지를 생성했습니다. 마음에 드시나요?"
+        state["retouch_action"] = None
+        clear_pending_retouch(state)
+        _set_no_rag(state, "retouch_synthesis_complete")
+    except Exception as e:
+        logger.error("리터치 이미지 생성 실패: %s", e, exc_info=True)
+        state["answer"] = "리터치 이미지 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+        state["retouch_result_image_url"] = None
+        state["retouched_image_url"] = None
+        _set_no_rag(state, "retouch_synthesis_error")
+
     return state
 
 

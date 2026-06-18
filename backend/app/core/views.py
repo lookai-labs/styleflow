@@ -443,13 +443,17 @@ def ai_chat(request):
         logger.error("챗봇 답변 생성 실패: user_id=%s, error=%s", request.user.id, e, exc_info=True)
         return Response({'error': '챗봇 답변 생성 중 오류가 발생했습니다.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    retouched_image_url = result.get('retouched_image_url')
+    if retouched_image_url and retouched_image_url.startswith('/'):
+        retouched_image_url = request.build_absolute_uri(retouched_image_url)
+
     return Response({
         'reply': result.get('answer', ''),
         'updated_chat_history': result.get('updated_chat_history', []),
         'updated_user_profile': result.get('updated_user_profile', {}),
         'selection': result.get('selection'),
         'pending_selection': result.get('pending_selection'),
-        'retouched_image_url': result.get('retouched_image_url'),
+        'retouched_image_url': retouched_image_url,
     })
 
 
