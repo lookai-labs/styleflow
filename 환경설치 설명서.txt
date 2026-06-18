@@ -24,6 +24,32 @@ PW : 1234
 
 [가이드라인]
 guidelines/styleflow.md
+작업시작 전 클로드에게 읽게 하면 좋습니다
+본인이 직접 읽으면 더 좋습니다
 
 [헤어겐 모델 설치 (약 7GB)]
 backend/gan_models/HairFastGAN-p310/model_downloader.py실행
+
+[메이크업겐]
+backend/gan_models/BeautyGAN-master-p310을 아래의 파일로 교체
+https://drive.google.com/file/d/1J0pn2AtsgL47kSRhwYIIl2gKTtWREd2G/view?usp=sharing
+
+
+[DB워크벤치]
+1. MySQL Workbench 실행
+2. + 버튼 클릭
+3. 두 번째 Connection Method: Standard TCP/IP over SSH 선택
+4. 순서대로 입력
+Connection Name: 스타일플로우 DB
+Connection Method: Standard TCP/IP over SSH
+SSH Hostname: 116.125.141.65
+SSH Username: styleflow
+SSH Password: styleflow0915@
+SSH Key File: (비우기)
+MySQL Hostname: 127.0.0.1
+MySQL Server Port: 3306
+Username: styleflow
+password: styleflow0915@
+Default Schema: (비우기)
+
+** 접속 시 styleflow0915@를 두 번 입력하면 됩니다. (로컬 로그인 -> 선생님 서버 로그인) **
