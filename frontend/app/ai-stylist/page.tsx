@@ -35,6 +35,14 @@ type ConsultData = {
   style: string;
   allStyles: string;
   currentStyleIndex: number;
+  styleName?: string;
+  simulationResultId?: number | null;
+  hairMappings?: Array<{ id: number; style_name: string }>;
+  makeupMappings?: Array<{ id: number; style_name: string }>;
+  faceShape?: string | null;
+  personalColor?: string | null;
+  hairSummary?: string | null;
+  makeupSummary?: string | null;
 };
 
 type ApiResponse = {
@@ -122,6 +130,10 @@ export default function AIStylistPage() {
       try {
         const data: ConsultData = JSON.parse(stored);
         setConsultData(data);
+        console.log("[AI Stylist] simulationResultId:", data.simulationResultId);
+
+        const greetingName = data.styleName ? `'${data.styleName}' 스타일` : "선택하신 스타일";
+        const greeting = `${greetingName}에 대해 맞춤형 스타일링 상담을 도와드리겠습니다.`;
 
         if (data.selectedImage) {
           initialMsgCount.current = 2;
@@ -129,21 +141,14 @@ export default function AIStylistPage() {
           timer = setTimeout(() => {
             setMessages((prev) => [
               ...prev,
-              {
-                role: "assistant",
-                content: "분석 결과를 바탕으로 맞춤형 스타일링 추천을 도와드리겠습니다.",
-              },
+              { role: "assistant", content: greeting },
             ]);
           }, 600);
         } else {
           initialMsgCount.current = 1;
-          setMessages([
-            {
-              role: "assistant",
-              content: "분석 결과를 바탕으로 맞춤형 스타일링 추천을 도와드리겠습니다.",
-            },
-          ]);
+          setMessages([{ role: "assistant", content: greeting }]);
         }
+
       } catch {}
     } else {
       initialMsgCount.current = 1;
@@ -179,20 +184,27 @@ export default function AIStylistPage() {
     message: string,
     selectedOption?: { type: string; id: string }
   ): Promise<ApiResponse> => {
-    const analysisRaw = localStorage.getItem("styleflow_analysis_result");
-    const analysisResult = analysisRaw ? JSON.parse(analysisRaw) : null;
-
-    const previousAnalysis = analysisResult
-      ? [analysisResult.hair_analysis_summary, analysisResult.makeup_analysis_summary]
-          .filter(Boolean)
-          .join("\n")
+    const previousAnalysis = consultData
+      ? [consultData.hairSummary, consultData.makeupSummary].filter(Boolean).join("\n")
       : null;
+
+    const previousRecommendations = [
+      ...(consultData?.hairMappings ?? []).map((m) => ({
+        category: "hair",
+        style_name: m.style_name,
+      })),
+      ...(consultData?.makeupMappings ?? []).map((m) => ({
+        category: "makeup",
+        style_name: m.style_name,
+      })),
+    ];
 
     const res = await api.post("/ai-chat/", {
       message,
-      face_shape: analysisResult?.face_shape ?? "round",
-      personal_color: analysisResult?.personal_color ?? "봄 웜톤",
+      face_shape: consultData?.faceShape ?? "round",
+      personal_color: consultData?.personalColor ?? "봄 웜톤",
       previous_analysis: previousAnalysis,
+      previous_recommendations: previousRecommendations,
       chat_history: chatHistory,
       user_profile: userProfile,
       ...(selectedOption ? { selected_option: selectedOption } : {}),
@@ -201,10 +213,18 @@ export default function AIStylistPage() {
     return res.data as ApiResponse;
   };
 
-  /* ── API 응답을 채팅창에 반영 ── */
-  const applyApiResponse = (data: ApiResponse) => {
+  /* ── API 응답을 채팅창에 반영 + user_feedback 저장 ── */
+  const applyApiResponse = (data: ApiResponse, userMessage: string) => {
     setChatHistory(data.updated_chat_history ?? []);
     setUserProfile(data.updated_user_profile ?? {});
+
+    const targetType = (consultData?.style?.split(",")[0] ?? "makeup") as "hair" | "makeup";
+    api.post("/feedback/chat/", {
+      user_chat: userMessage,
+      ai_chat: data.reply,
+      target_type: targetType,
+      simulation_result_id: consultData?.simulationResultId ?? null,
+    }).catch((e) => console.error("[AI Stylist] feedback 저장 실패:", e?.response?.data ?? e));
 
     setTimeout(() => {
       const hasSelection = !!data.selection?.options?.length;
@@ -227,8 +247,9 @@ export default function AIStylistPage() {
 
     try {
       const data = await callChatApi(content);
-      applyApiResponse(data);
-    } catch {
+      applyApiResponse(data, content);
+    } catch (err) {
+      console.error("[AI Stylist] ai-chat API 실패 (폴백 응답):", err);
       const fallback = FALLBACK_TEXTS[fallbackCursor % FALLBACK_TEXTS.length];
       fallbackCursor++;
       setTimeout(() => {
@@ -246,7 +267,7 @@ export default function AIStylistPage() {
         type: selection.type,
         id: option.id,
       });
-      applyApiResponse(data);
+      applyApiResponse(data, option.label);
     } catch {
       const fallback = FALLBACK_TEXTS[fallbackCursor % FALLBACK_TEXTS.length];
       fallbackCursor++;

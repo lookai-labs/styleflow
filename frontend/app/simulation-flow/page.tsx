@@ -94,6 +94,13 @@ function SimulationFlowInner() {
   const [faceImage, setFaceImage] = useState<string>("");
   // 케이스 3: 메이크업 선택 결과 (헤어 단계의 Before 표시용)
   const [makeupResultImage, setMakeupResultImage] = useState<string>("");
+  // 분석 결과 (스타일 이름 매핑용)
+  const [analysisResult, setAnalysisResult] = useState<{
+    hair_mappings?: Array<{ id: number; style_name: string }>;
+    makeup_mappings?: Array<{ id: number; style_name: string }>;
+  } | null>(null);
+  // 단계별 확정된 스타일 이름
+  const [selectedStyleNames, setSelectedStyleNames] = useState<Partial<Record<StyleType, string>>>({});
 
   const confirmCardRef = useRef<HTMLDivElement>(null);
   const apiCalledRef = useRef(false);
@@ -101,12 +108,27 @@ function SimulationFlowInner() {
   const currentStyle = activeStyles[currentStyleIndex];
   const results = ganResults[currentStyle] ?? FALLBACK_RESULTS[currentStyle] ?? [];
   const overallProgress = (currentStyleIndex / activeStyles.length) * 100;
+
+  const getMappingName = (category: StyleType): string => {
+    const mappings = category === "hair"
+      ? analysisResult?.hair_mappings
+      : analysisResult?.makeup_mappings;
+    return mappings?.[0]?.style_name ?? "";
+  };
+
+  const displayResults = results.map((r) => ({
+    ...r,
+    name: getMappingName(currentStyle) || r.name,
+  }));
   const loadingProgress = (loadingStep / LOADING_STEPS.length) * 100;
 
   /* ── 마운트 시 localStorage에서 상태 복원 ── */
   useEffect(() => {
     const faceImg = localStorage.getItem("styleflow_face_image");
     if (faceImg) setFaceImage(faceImg);
+
+    const ar = localStorage.getItem("styleflow_analysis_result");
+    if (ar) { try { setAnalysisResult(JSON.parse(ar)); } catch {} }
 
     const makeupImg = localStorage.getItem("styleflow_selected_makeup_image");
     if (makeupImg) setMakeupResultImage(makeupImg);
@@ -297,14 +319,23 @@ function SimulationFlowInner() {
   /* ── AI 상담하기: 선택 카드 정보 + 전체 스타일 목록을 localStorage에 저장 후 이동 ── */
   const handleConsult = () => {
     const selectedResult = results.find((r) => r.id === selectedId);
+    const ar = analysisResult as Record<string, unknown> | null;
     localStorage.setItem(
       "styleflow_consultation",
       JSON.stringify({
         selectedId,
         selectedImage: selectedResult?.image ?? "",
         style: currentStyle,
-        allStyles: activeStyles.join(","),   // ← 전체 스타일 목록 보존
-        currentStyleIndex,                  // ← 현재 단계 인덱스 보존
+        allStyles: activeStyles.join(","),
+        currentStyleIndex,
+        styleName: getMappingName(currentStyle),
+        simulationResultId: null,
+        hairMappings: ar?.hair_mappings ?? [],
+        makeupMappings: ar?.makeup_mappings ?? [],
+        faceShape: ar?.face_shape ?? null,
+        personalColor: ar?.personal_color ?? null,
+        hairSummary: ar?.hair_analysis_summary ?? null,
+        makeupSummary: ar?.makeup_analysis_summary ?? null,
       })
     );
     router.push("/ai-stylist");
@@ -327,6 +358,7 @@ function SimulationFlowInner() {
         }
       }
       apiCalledRef.current = false; // 다음 스타일 단계를 위해 반드시 초기화
+      setSelectedStyleNames((prev) => ({ ...prev, [currentStyle]: getMappingName(currentStyle) }));
       setCompletedStyles((prev) => [...prev, currentStyle]);
       setCurrentStyleIndex(next);
       setPhase("loading");
@@ -338,12 +370,14 @@ function SimulationFlowInner() {
         aiModifiedData?.selectedId === selectedId && aiModifiedData?.aiImage
           ? aiModifiedData.aiImage
           : selectedResult?.image ?? "";
+      const finalStyleNames = { ...selectedStyleNames, [currentStyle]: getMappingName(currentStyle) };
       localStorage.setItem(
         "styleflow_final_result",
         JSON.stringify({
           completedStyles: allCompleted,
           afterImage,
           beforeImage: faceImage || localStorage.getItem("styleflow_face_image") || "",
+          styleNames: finalStyleNames,
         })
       );
       // 시뮬레이션 진행 캐시 정리
@@ -498,7 +532,7 @@ function SimulationFlowInner() {
                   <span className="text-xs text-gray-400">AI 시뮬레이션 결과 — 마음에 드는 스타일을 선택하세요</span>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 flex-1">
-                  {results.map((result) => {
+                  {displayResults.map((result) => {
                     const isSelected = selectedId === result.id;
                     const isAiModified = aiModifiedData?.selectedId === result.id;
                     const displayImage =

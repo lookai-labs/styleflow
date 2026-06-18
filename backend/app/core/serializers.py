@@ -44,7 +44,8 @@ class UserFeedbackSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = UserFeedback
-        fields = '__all__'
+        fields = ['id', 'user', 'user_nickname', 'simulation_result', 'target_type',
+                  'user_chat', 'ai_chat', 'img_url', 'applied_style_key', 'created_at']
 
 
 class SimulationResultSerializer(serializers.ModelSerializer):

@@ -11,20 +11,23 @@ CATEGORY_HAIR = "hair"
 CATEGORY_MAKEUP = "makeup"
 
 
-def _result_contains_style_code(
+def _result_contains_style(
     retrieval_result: RetrievalResult,
-    style_code: str,
+    *,
+    style_code: str | None = None,
+    style_name: str | None = None,
 ) -> bool:
     """
-    검색 결과 안에 요청한 style_code 문서가 실제로 포함되어 있는지 확인한다.
+    검색 결과 안에 요청한 스타일 문서가 실제로 포함되어 있는지 확인한다.
 
-    fallback 검색은 후순위 단계에서 category 같은 넓은 조건만으로도 결과를
-    반환할 수 있으므로, retrieved_count만으로는 해당 스타일의 RAG 데이터가
-    있다고 판단하기 어렵다.
+    style_code가 있으면 style_code로 매칭하고,
+    없으면 style_name으로 매칭한다 (메이크업처럼 DB에 code가 없는 경우).
     """
     for document in retrieval_result.documents:
         metadata = document.metadata or {}
-        if metadata.get("style_code") == style_code:
+        if style_code and metadata.get("style_code") == style_code:
+            return True
+        if not style_code and style_name and metadata.get("style_name") == style_name:
             return True
 
     return False
@@ -101,7 +104,10 @@ def _build_makeup_retrieval_queries(
     style_infos: list[dict[str, Any]] = []
 
     for style in recommended_makeup_styles:
-        style_name, style_code = _validate_style(style, "추천 메이크업")
+        style_name = style.get("style_name")
+        if not style_name:
+            raise ValueError("추천 메이크업에는 style_name이 필요합니다.")
+        style_code = style.get("style_code") or None  # 메이크업은 code 없어도 됨
         makeup_group = style.get("makeup_group")
 
         query = (
@@ -147,9 +153,10 @@ def _build_recommendation_results(
         (
             style_info,
             retrieval_result,
-            _result_contains_style_code(
+            _result_contains_style(
                 retrieval_result,
-                style_info["style_code"],
+                style_code=style_info.get("style_code"),
+                style_name=style_info.get("style_name"),
             ),
         )
         for style_info, retrieval_result in paired

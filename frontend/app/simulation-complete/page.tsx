@@ -22,12 +22,14 @@ type FinalResult = {
   completedStyles: string[];
   afterImage: string;
   beforeImage: string;
+  styleNames?: Partial<Record<string, string>>;
 };
 
 export default function SimulationCompletePage() {
   const router = useRouter();
   const authorized = useRequireAuth();
   const [finalResult, setFinalResult] = useState<FinalResult | null>(null);
+  const [savedSimResultId, setSavedSimResultId] = useState<number | null>(null);
 
   useEffect(() => {
     const stored = localStorage.getItem("styleflow_final_result");
@@ -43,12 +45,25 @@ export default function SimulationCompletePage() {
   const afterImage     = finalResult?.afterImage  ?? FALLBACK_AFTER;
 
   const handleAIConsult = () => {
+    let analysisData: Record<string, unknown> | null = null;
+    try {
+      const ar = localStorage.getItem("styleflow_analysis_result");
+      if (ar) analysisData = JSON.parse(ar);
+    } catch {}
+
     const consultData = {
       selectedId: "simulation-complete",
       selectedImage: afterImage,
-      style: completedSteps.join(","),
+      style: completedSteps[0] ?? "makeup",
       allStyles: completedSteps.join(","),
       currentStyleIndex: 0,
+      simulationResultId: savedSimResultId,
+      hairMappings: analysisData?.hair_mappings ?? [],
+      makeupMappings: analysisData?.makeup_mappings ?? [],
+      faceShape: analysisData?.face_shape ?? null,
+      personalColor: analysisData?.personal_color ?? null,
+      hairSummary: analysisData?.hair_analysis_summary ?? null,
+      makeupSummary: analysisData?.makeup_analysis_summary ?? null,
     };
     localStorage.setItem("styleflow_consultation", JSON.stringify(consultData));
     router.push("/ai-stylist");
@@ -76,10 +91,11 @@ export default function SimulationCompletePage() {
       const formData = new FormData();
       formData.append('face_image', new File([blob], 'face.jpg', { type: mime }));
       formData.append('after_image_filename', afterFilename);
-      if (completedSteps.includes('makeup')) formData.append('makeup_name', '웜 코랄 메이크업');
-      if (completedSteps.includes('hair'))   formData.append('hair_name', '레이어드 웨이브');
+      if (completedSteps.includes('makeup')) formData.append('makeup_name', finalResult?.styleNames?.['makeup'] ?? '');
+      if (completedSteps.includes('hair'))   formData.append('hair_name', finalResult?.styleNames?.['hair'] ?? '');
 
-      await api.post('/simulate/save/', formData);
+      const res = await api.post('/simulate/save/', formData);
+      setSavedSimResultId(res.data.id ?? null);
       toast.success('마이홈에 저장되었습니다');
     } catch {
       toast.error('저장에 실패했습니다. 다시 시도해 주세요.');
@@ -115,7 +131,10 @@ export default function SimulationCompletePage() {
                 <div key={idx} className="flex items-center gap-2">
                   <div className="flex items-center gap-2 bg-gray-100 px-4 py-2 rounded-full">
                     <Check className="w-4 h-4 text-green-600" />
-                    <span className="text-sm">{STYLE_LABEL[step] ?? step}</span>
+                    <span className="text-sm">
+                      {STYLE_LABEL[step] ?? step}
+                      {finalResult?.styleNames?.[step] && ` · ${finalResult.styleNames[step]}`}
+                    </span>
                   </div>
                   {idx < completedSteps.length - 1 && <span className="text-gray-400">→</span>}
                 </div>

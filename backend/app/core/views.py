@@ -263,7 +263,7 @@ _DUMMY_HAIR_RECOMMENDATIONS = [
 ]
 
 _DUMMY_MAKEUP_MALE = [
-    {'style_name': '봄웜 메이크업', 'style_code': 'mk-m-spring-warm', 'makeup_group': 'male_spring_warm'},
+    {'style_name': '봄웜 내추럴 메이크업', 'style_code': 'mk-m-spring-warm', 'makeup_group': 'male_spring_warm'},
 ]
 
 
@@ -399,6 +399,7 @@ def ai_chat(request):
     chat_history = request.data.get('chat_history') or []
     user_profile = request.data.get('user_profile') or {}
     selected_option = request.data.get('selected_option') or None
+    previous_recommendations = request.data.get('previous_recommendations') or _CHATBOT_DUMMY_RECOMMENDATIONS
 
     try:
         from backend.app.rag.chatbot_rag.graph import run_chatbot
@@ -409,7 +410,7 @@ def ai_chat(request):
             face_proportion=face_proportion,
             personal_color=personal_color,
             previous_analysis=previous_analysis,
-            previous_recommendations=_CHATBOT_DUMMY_RECOMMENDATIONS,
+            previous_recommendations=previous_recommendations,
             chat_history=chat_history,
             user_profile=user_profile,
             selected_option=selected_option,
@@ -468,3 +469,29 @@ def simulate_save(request):
 
     serializer = SimulationResultSerializer(sim, context={'request': request})
     return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+def feedback_chat(request):
+    """채팅 한 쌍(user_chat + ai_chat)을 user_feedback에 저장."""
+    user_chat = request.data.get('user_chat', '')
+    ai_chat = request.data.get('ai_chat', '')
+    target_type = request.data.get('target_type', 'makeup')
+    simulation_result_id = request.data.get('simulation_result_id')
+
+    sim_result = None
+    if simulation_result_id:
+        try:
+            sim_result = SimulationResult.objects.get(id=simulation_result_id)
+        except SimulationResult.DoesNotExist:
+            pass
+
+    UserFeedback.objects.create(
+        user_id=request.user.id,
+        simulation_result=sim_result,
+        target_type=target_type if target_type in ('hair', 'makeup') else 'makeup',
+        user_chat=user_chat,
+        ai_chat=ai_chat,
+    )
+
+    return Response({'ok': True}, status=status.HTTP_201_CREATED)
