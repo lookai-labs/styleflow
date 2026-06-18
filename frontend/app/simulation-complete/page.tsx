@@ -42,6 +42,18 @@ export default function SimulationCompletePage() {
   const beforeImage    = finalResult?.beforeImage ?? FALLBACK_BEFORE;
   const afterImage     = finalResult?.afterImage  ?? FALLBACK_AFTER;
 
+  const handleAIConsult = () => {
+    const consultData = {
+      selectedId: "simulation-complete",
+      selectedImage: afterImage,
+      style: completedSteps.join(","),
+      allStyles: completedSteps.join(","),
+      currentStyleIndex: 0,
+    };
+    localStorage.setItem("styleflow_consultation", JSON.stringify(consultData));
+    router.push("/ai-stylist");
+  };
+
   const handleSave = async () => {
     try {
       const afterFilename = afterImage.split('/').pop() ?? '';
@@ -122,11 +134,11 @@ export default function SimulationCompletePage() {
             </Button>
           </div>
           <Button
-            disabled
+            onClick={handleAIConsult}
             variant="outline"
-            className="w-full border-2 border-gray-200 text-gray-300 py-6 text-lg cursor-not-allowed"
+            className="w-full border-2 border-black py-6 text-lg"
           >
-            <MessageSquare className="mr-2 h-5 w-5" />코디 바꾸기
+            <MessageSquare className="mr-2 h-5 w-5" />AI 상담하기
           </Button>
           <Button onClick={() => router.push("/result/face")} variant="outline" className="w-full border-2 border-gray-300 py-6 text-lg">
             <RotateCcw className="mr-2 h-5 w-5" />다시 시뮬레이션하기

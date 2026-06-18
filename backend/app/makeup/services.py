@@ -7,6 +7,29 @@ from pathlib import Path
 import numpy as np
 import dlib
 import cv2
+
+
+def _patch_protobuf_for_mediapipe() -> None:
+    """protobuf 4.x+ 에서 제거된 GetPrototype 을 mediapipe 0.10.9 가 요구한다.
+    GetMessageClass 로 위임하는 메서드를 동적으로 추가한다."""
+    try:
+        from google.protobuf import message_factory as _mf
+        get_class = getattr(_mf, "GetMessageClass", None)
+        if get_class is None:
+            return
+
+        from google.protobuf import symbol_database as _sdb
+        if not hasattr(_sdb.Default().__class__, "GetPrototype"):
+            _sdb.Default().__class__.GetPrototype = lambda self, desc: get_class(desc)
+
+        if not hasattr(_mf.MessageFactory, "GetPrototype"):
+            _mf.MessageFactory.GetPrototype = lambda self, desc: get_class(desc)
+    except Exception:
+        pass
+
+
+_patch_protobuf_for_mediapipe()
+
 import mediapipe as mp
 import tensorflow.compat.v1 as tf
 tf.disable_eager_execution()

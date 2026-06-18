@@ -6,6 +6,7 @@ from .views import (
     SavedResultViewSet, health_check, simulate_save,
     register, login_view, token_refresh,
     HairStyleViewSet, MakeupStyleViewSet, admin_dashboard, UserFeedbackViewSet,
+    analyze, ai_chat,
 )
 
 router = DefaultRouter()
@@ -26,4 +27,6 @@ urlpatterns = [
     path('auth/login/', login_view, name='auth-login'),
     path('auth/refresh/', token_refresh, name='auth-refresh'),
     path('admin/dashboard/', admin_dashboard, name='admin-dashboard'),
+    path('analyze/', analyze, name='analyze'),
+    path('ai-chat/', ai_chat, name='ai-chat'),
 ]

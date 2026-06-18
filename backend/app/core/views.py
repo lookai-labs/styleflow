@@ -1,3 +1,4 @@
+import logging
 import os
 import uuid
 
@@ -12,6 +13,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 
 from ..models import User, HairStyle, MakeupStyle, AnalysisSession, StyleMappingList, SimulationResult, UserFeedback
+
+logger = logging.getLogger(__name__)
 from .serializers import (
     UserSerializer, HairStyleSerializer, MakeupStyleSerializer,
     AnalysisSessionSerializer, StyleMappingListSerializer, SimulationResultSerializer,
@@ -213,6 +216,152 @@ class SavedResultViewSet(viewsets.ModelViewSet):
 
 
 # ── 기능 뷰 ──────────────────────────────────────────────────────────────
+
+_FACE_PROPORTION_MAP = {
+    'upper': '상정이 긴 비율',
+    'middle': '중정이 긴 비율',
+    'lower': '하정이 긴 비율',
+    'golden': '황금 비율',
+}
+
+_PERSONAL_COLOR_MAP = {
+    'spring': '봄 웜톤',
+    'summer': '여름 쿨톤',
+    'fall': '가을 웜톤',
+    'winter': '겨울 쿨톤',
+}
+
+# style_code, makeup_group 은 추후 MakeupStyle 모델 필드로 교체 예정
+_MAKEUP_DUMMY_META = {
+    '웜 코랄 메이크업': {'style_code': 'MS1', 'makeup_group': 'coral'},
+    '소프트 뉴트럴':    {'style_code': 'MS2', 'makeup_group': 'neutral'},
+    '로즈 글로우':      {'style_code': 'MS3', 'makeup_group': 'rose'},
+}
+
+_CHATBOT_DUMMY_RECOMMENDATIONS = [
+    {'category': 'hair',   'style_name': '퀴프',          'style_code': 'm-10'},
+    {'category': 'makeup', 'style_name': '코랄 메이크업', 'style_code': 'mk-sp-coral', 'makeup_group': 'spring_coral'},
+]
+
+_DUMMY_HAIR_STYLES = [
+    {'style_name': '퀴프',       'style_code': 'm-10'},
+    {'style_name': '포마드',     'style_code': 'm-16'},
+    {'style_name': '아이비리그', 'style_code': 'm-03'},
+]
+
+_DUMMY_MAKEUP_STYLES = [
+    {'style_name': '코랄 메이크업',      'style_code': 'mk-sp-coral',    'makeup_group': 'spring_coral'},
+    {'style_name': '피치 메이크업',      'style_code': 'mk-sp-peach',    'makeup_group': 'spring_peach'},
+    {'style_name': '봄웜 내추럴 메이크업', 'style_code': 'mk-m-sp-natural', 'makeup_group': 'male_spring_natural'},
+]
+
+
+@api_view(['POST'])
+def analyze(request):
+    """
+    RAG 기반 분석 결과 요약 생성.
+
+    face_shape, face_point, skin_tone 을 받아 hair/makeup 분석 문장을 반환한다.
+    face analysis 모델이 미구현인 동안은 프론트에서 더미 값을 전송한다.
+    """
+    face_shape = request.data.get('face_shape', 'round')
+    face_point = request.data.get('face_point', 'golden')
+    skin_tone = request.data.get('skin_tone', 'spring')
+    gender = getattr(request.user, 'gender', 'female')
+
+    face_proportion = _FACE_PROPORTION_MAP.get(face_point, '황금 비율')
+    personal_color = _PERSONAL_COLOR_MAP.get(skin_tone, '봄 웜톤')
+
+    recommended_hair_styles = [
+        {
+            'style_name': hs.style_name,
+            'style_code': hs.hair_code or f'H{hs.id}',
+        }
+        for hs in HairStyle.objects.all()
+    ] or _DUMMY_HAIR_STYLES
+
+    recommended_makeup_styles = [
+        {
+            'style_name': ms.style_name,
+            'style_code': _MAKEUP_DUMMY_META.get(ms.style_name, {}).get('style_code', f'MS{ms.id}'),
+            'makeup_group': _MAKEUP_DUMMY_META.get(ms.style_name, {}).get('makeup_group', 'general'),
+        }
+        for ms in MakeupStyle.objects.all()
+    ] or _DUMMY_MAKEUP_STYLES
+
+    try:
+        from backend.app.rag.analysis_rag.service import generate_analysis_result
+        result = generate_analysis_result(
+            gender=gender,
+            face_shape=face_shape,
+            face_proportion=face_proportion,
+            recommended_hair_styles=recommended_hair_styles,
+            personal_color=personal_color,
+            recommended_makeup_styles=recommended_makeup_styles or None,
+        )
+    except Exception as e:
+        logger.error("RAG 분석 실패: user_id=%s, face_shape=%s, error=%s", request.user.id, face_shape, e, exc_info=True)
+        return Response({'error': 'RAG 분석 중 오류가 발생했습니다.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response({
+        'hair_analysis_summary': result['hair_analysis_summary'],
+        'makeup_analysis_summary': result.get('makeup_analysis_summary'),
+        'face_shape': face_shape,
+        'skin_tone': skin_tone,
+        'personal_color': personal_color,
+    })
+
+
+@api_view(['POST'])
+def ai_chat(request):
+    """
+    챗봇 상담 답변 생성.
+
+    run_chatbot() LangGraph 그래프로 의도 분류, RAG 검색, 답변 생성을 수행한다.
+    previous_recommendations는 실제 추천 모듈 연결 전까지 더미 데이터를 사용한다.
+    """
+    message = request.data.get('message', '').strip()
+    if not message:
+        return Response({'error': '메시지를 입력해주세요.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    face_shape = request.data.get('face_shape', 'round')
+    personal_color = request.data.get('personal_color', '봄 웜톤')
+    gender = getattr(request.user, 'gender', 'female')
+    face_proportion = _FACE_PROPORTION_MAP.get('golden', '황금 비율')
+
+    previous_analysis = request.data.get('previous_analysis') or (
+        "둥근형 얼굴에 어울리는 레이어드 웨이브 헤어스타일과 봄 웜톤에 맞는 코랄 메이크업을 추천드립니다."
+    )
+    chat_history = request.data.get('chat_history') or []
+    user_profile = request.data.get('user_profile') or {}
+    selected_option = request.data.get('selected_option') or None
+
+    try:
+        from backend.app.rag.chatbot_rag.graph import run_chatbot
+        result = run_chatbot(
+            user_message=message,
+            gender=gender,
+            face_shape=face_shape,
+            face_proportion=face_proportion,
+            personal_color=personal_color,
+            previous_analysis=previous_analysis,
+            previous_recommendations=_CHATBOT_DUMMY_RECOMMENDATIONS,
+            chat_history=chat_history,
+            user_profile=user_profile,
+            selected_option=selected_option,
+        )
+    except Exception as e:
+        logger.error("챗봇 답변 생성 실패: user_id=%s, error=%s", request.user.id, e, exc_info=True)
+        return Response({'error': '챗봇 답변 생성 중 오류가 발생했습니다.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response({
+        'reply': result.get('answer', ''),
+        'updated_chat_history': result.get('updated_chat_history', []),
+        'updated_user_profile': result.get('updated_user_profile', {}),
+        'selection': result.get('selection'),
+        'pending_selection': result.get('pending_selection'),
+    })
+
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
