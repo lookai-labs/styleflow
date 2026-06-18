@@ -238,3 +238,6 @@ Thumbs.db
 *.pt
 *.ckpt
 *.h5
+
+# vector data
+vector_data/

@@ -574,7 +574,7 @@ function SimulationFlowInner() {
                     <Button
                       variant="outline"
                       onClick={handleConsult}
-                      className="border-2 border-gray-300 whitespace-nowrap"
+                      className="border-2 border-black whitespace-nowrap"
                     >
                       <MessageCircle className="mr-2 h-4 w-4" />
                       AI 상담하기

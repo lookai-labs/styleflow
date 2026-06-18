@@ -7,68 +7,93 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Send, ArrowLeft, Check } from "lucide-react";
-import axios from "axios";
+import api from "@/lib/api";
 
 /* ── 타입 ── */
+type SelectionOption = {
+  id: string;
+  label: string;
+  value?: string;
+};
+
+type Selection = {
+  type: string;
+  title?: string;
+  options: SelectionOption[];
+};
+
 type Message = {
   role: "assistant" | "user";
-  content?: string;   // 텍스트 (없으면 이미지만)
-  image?: string;     // 이미지 URL (없으면 텍스트만)
+  content?: string;
+  image?: string;
+  selection?: Selection;
 };
 
 type ConsultData = {
   selectedId: string;
   selectedImage: string;
   style: string;
-  allStyles: string;        // "makeup,hair" 형식
+  allStyles: string;
   currentStyleIndex: number;
 };
 
-/* ── 더미 데이터 ── */
-const AI_IMAGES = [
-  "https://images.unsplash.com/photo-1596704017254-9b121068fb31?w=800",
-  "https://images.unsplash.com/photo-1512496015851-a90fb38ba796?w=800",
-  "https://images.unsplash.com/photo-1487412947147-5cebf100ffc2?w=800",
-  "https://images.unsplash.com/photo-1522337660859-02fbefca4702?w=800",
-  "https://images.unsplash.com/photo-1492106087820-71f1a00d2b11?w=800",
-];
+type ApiResponse = {
+  reply: string;
+  updated_chat_history: { role: string; content: string }[];
+  updated_user_profile: Record<string, unknown>;
+  selection?: Selection | null;
+  pending_selection?: string | null;
+};
 
-const AI_TEXTS = [
-  "요청하신 방향으로 스타일을 수정했어요.",
-  "말씀해주신 내용을 반영해 새로운 시뮬레이션을 생성했습니다.",
-  "웜톤 피부에 잘 어울리는 새로운 스타일을 제안드립니다.",
-  "분석 결과를 바탕으로 맞춤 스타일 이미지를 생성했어요. 마음에 드시나요?",
-  "수정된 스타일 이미지가 준비됐습니다. 추가 조정이 필요하면 말씀해주세요.",
+/* ── API 실패 시 폴백 텍스트 ── */
+const FALLBACK_TEXTS = [
+  "요청하신 방향으로 스타일을 안내해 드릴게요.",
+  "말씀해주신 내용을 참고해 새로운 스타일을 제안드립니다.",
+  "웜톤 피부에 잘 어울리는 스타일을 제안드립니다.",
 ];
-
-let imgCursor = 0;
-let txtCursor = 0;
+let fallbackCursor = 0;
 
 /* ── 말풍선 컴포넌트 ── */
-function Bubble({ msg }: { msg: Message }) {
+function Bubble({
+  msg,
+  onSelectOption,
+}: {
+  msg: Message;
+  onSelectOption?: (selection: Selection, option: SelectionOption) => void;
+}) {
   const isUser = msg.role === "user";
 
-  // 이미지만 있는 경우: 배경 없이 이미지 그대로 표시
-  if (msg.image && !msg.content) {
-    return (
-      <img
-        src={msg.image}
-        alt="이미지"
-        className="w-48 rounded-lg"
-      />
-    );
+  if (msg.image && !msg.content && !msg.selection) {
+    return <img src={msg.image} alt="이미지" className="w-48 rounded-lg" />;
   }
 
-  // 텍스트만 or 텍스트+이미지 (텍스트+이미지는 발생하지 않도록 분리 전송함)
   return (
     <div
       className={`max-w-[75%] p-4 rounded-lg ${
         isUser ? "bg-black text-white" : "bg-gray-100 text-black"
       }`}
     >
-      {msg.content && <p>{msg.content}</p>}
+      {msg.content && <p className="whitespace-pre-line">{msg.content}</p>}
       {msg.image && (
         <img src={msg.image} alt="이미지" className="w-full rounded-lg mt-3" />
+      )}
+      {msg.selection && (
+        <div className="mt-3 space-y-2">
+          {msg.selection.title && (
+            <p className="text-sm font-medium mb-2">{msg.selection.title}</p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {msg.selection.options.map((opt) => (
+              <button
+                key={opt.id}
+                onClick={() => onSelectOption?.(msg.selection!, opt)}
+                className="px-3 py-1.5 text-sm border border-gray-400 rounded-full bg-white hover:bg-gray-50 text-black transition-colors"
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -82,9 +107,10 @@ export default function AIStylistPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [latestAiImage, setLatestAiImage] = useState<string | null>(null);
+  const [chatHistory, setChatHistory] = useState<{ role: string; content: string }[]>([]);
+  const [userProfile, setUserProfile] = useState<Record<string, unknown>>({});
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  // 초기 로딩 메시지 개수 — 이 수 이하면 맨 위로, 초과하면 맨 아래로 스크롤
   const initialMsgCount = useRef(0);
 
   /* ── localStorage에서 상담 데이터 로드 + 초기 메시지 설정 ── */
@@ -98,7 +124,6 @@ export default function AIStylistPage() {
         setConsultData(data);
 
         if (data.selectedImage) {
-          // 초기 메시지: 이미지(1) + AI 인사(2)
           initialMsgCount.current = 2;
           setMessages([{ role: "user", image: data.selectedImage }]);
           timer = setTimeout(() => {
@@ -106,19 +131,16 @@ export default function AIStylistPage() {
               ...prev,
               {
                 role: "assistant",
-                content:
-                  "분석 결과를 바탕으로 맞춤형 스타일링 추천을 도와드리겠습니다.",
+                content: "분석 결과를 바탕으로 맞춤형 스타일링 추천을 도와드리겠습니다.",
               },
             ]);
           }, 600);
         } else {
-          // 초기 메시지: AI 인사(1)만
           initialMsgCount.current = 1;
           setMessages([
             {
               role: "assistant",
-              content:
-                "분석 결과를 바탕으로 맞춤형 스타일링 추천을 도와드리겠습니다.",
+              content: "분석 결과를 바탕으로 맞춤형 스타일링 추천을 도와드리겠습니다.",
             },
           ]);
         }
@@ -128,30 +150,23 @@ export default function AIStylistPage() {
       setMessages([
         {
           role: "assistant",
-          content:
-            "분석 결과를 바탕으로 맞춤형 스타일링 추천을 도와드리겠습니다.",
+          content: "분석 결과를 바탕으로 맞춤형 스타일링 추천을 도와드리겠습니다.",
         },
       ]);
     }
 
-    // StrictMode 두 번 실행 시 첫 번째 타이머를 정리해 메시지 중복 방지
     return () => {
       if (timer) clearTimeout(timer);
     };
   }, []);
 
-  /* ── 스크롤 제어
-       초기 메시지(이미지 + AI 인사) 로딩 중 → 페이지 + 컨테이너 맨 위로
-       그 이후 사용자/AI 메시지 추가 시  → 컨테이너 맨 아래로 따라가기 ── */
+  /* ── 스크롤 제어 ── */
   useEffect(() => {
     if (messages.length === 0) return;
-
     if (messages.length <= initialMsgCount.current) {
-      // 초기 메시지 로딩 단계 — 전체 페이지와 내부 컨테이너 모두 맨 위로
       window.scrollTo({ top: 0, behavior: "smooth" });
       messagesContainerRef.current?.scrollTo({ top: 0 });
     } else {
-      // 채팅 진행 중 — 내부 컨테이너를 최신 메시지까지 스크롤
       const container = messagesContainerRef.current;
       if (container) {
         container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
@@ -159,44 +174,89 @@ export default function AIStylistPage() {
     }
   }, [messages]);
 
-  /* ── 메시지 전송: AI가 텍스트 말풍선 → 이미지 말풍선 순으로 응답 ── */
+  /* ── 백엔드 호출 공통 함수 ── */
+  const callChatApi = async (
+    message: string,
+    selectedOption?: { type: string; id: string }
+  ): Promise<ApiResponse> => {
+    const analysisRaw = localStorage.getItem("styleflow_analysis_result");
+    const analysisResult = analysisRaw ? JSON.parse(analysisRaw) : null;
+
+    const previousAnalysis = analysisResult
+      ? [analysisResult.hair_analysis_summary, analysisResult.makeup_analysis_summary]
+          .filter(Boolean)
+          .join("\n")
+      : null;
+
+    const res = await api.post("/ai-chat/", {
+      message,
+      face_shape: analysisResult?.face_shape ?? "round",
+      personal_color: analysisResult?.personal_color ?? "봄 웜톤",
+      previous_analysis: previousAnalysis,
+      chat_history: chatHistory,
+      user_profile: userProfile,
+      ...(selectedOption ? { selected_option: selectedOption } : {}),
+    });
+
+    return res.data as ApiResponse;
+  };
+
+  /* ── API 응답을 채팅창에 반영 ── */
+  const applyApiResponse = (data: ApiResponse) => {
+    setChatHistory(data.updated_chat_history ?? []);
+    setUserProfile(data.updated_user_profile ?? {});
+
+    setTimeout(() => {
+      const hasSelection = !!data.selection?.options?.length;
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: data.reply,
+          ...(hasSelection ? { selection: data.selection! } : {}),
+        },
+      ]);
+    }, 800);
+  };
+
+  /* ── 메시지 전송 ── */
   const handleSend = async (content: string) => {
     if (!content.trim()) return;
     setMessages((prev) => [...prev, { role: "user", content }]);
     setInputValue("");
 
-    const aiImage = AI_IMAGES[imgCursor % AI_IMAGES.length];
-    imgCursor++;
-    let replyText = AI_TEXTS[txtCursor % AI_TEXTS.length];
-    txtCursor++;
-
     try {
-      const res = await axios.post("http://localhost:8000/api/ai-chat/", {
-        message: content,
-      });
-      replyText = res.data.reply;
+      const data = await callChatApi(content);
+      applyApiResponse(data);
     } catch {
-      /* 백엔드 없으면 더미 텍스트 사용 */
-    }
-
-    // ① 텍스트 말풍선 먼저
-    setTimeout(() => {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: replyText },
-      ]);
-
-      // ② 이미지 말풍선 별도로
+      const fallback = FALLBACK_TEXTS[fallbackCursor % FALLBACK_TEXTS.length];
+      fallbackCursor++;
       setTimeout(() => {
-        setMessages((prev) => [...prev, { role: "assistant", image: aiImage }]);
-        setLatestAiImage(aiImage);
-      }, 400);
-    }, 800);
+        setMessages((prev) => [...prev, { role: "assistant", content: fallback }]);
+      }, 800);
+    }
   };
 
-  /* ── 돌아가기 ──
-     simulation-flow에서 진입: 전체 스타일 목록 복원하여 시뮬레이션 결과로
-     simulation-complete("코디 바꾸기")에서 진입: 시뮬레이션 완료 화면으로 ── */
+  /* ── 선택 버튼 클릭 처리 ── */
+  const handleSelectOption = async (selection: Selection, option: SelectionOption) => {
+    setMessages((prev) => [...prev, { role: "user", content: option.label }]);
+
+    try {
+      const data = await callChatApi(option.label, {
+        type: selection.type,
+        id: option.id,
+      });
+      applyApiResponse(data);
+    } catch {
+      const fallback = FALLBACK_TEXTS[fallbackCursor % FALLBACK_TEXTS.length];
+      fallbackCursor++;
+      setTimeout(() => {
+        setMessages((prev) => [...prev, { role: "assistant", content: fallback }]);
+      }, 800);
+    }
+  };
+
+  /* ── 돌아가기 ── */
   const handleGoBack = () => {
     if (!consultData) {
       router.push("/simulation-complete");
@@ -204,14 +264,10 @@ export default function AIStylistPage() {
     }
     const allStyles = consultData.allStyles ?? consultData.style ?? "makeup";
     const idx = consultData.currentStyleIndex ?? 0;
-    router.push(
-      `/simulation-flow?styles=${allStyles}&return=back&resumeIdx=${idx}`
-    );
+    router.push(`/simulation-flow?styles=${allStyles}&return=back&resumeIdx=${idx}`);
   };
 
-  /* ── 결과 적용하기 ──
-     simulation-flow에서 진입: AI 이미지 저장 후 시뮬레이션 결과로
-     simulation-complete("코디 바꾸기")에서 진입: 시뮬레이션 완료 화면으로 ── */
+  /* ── 결과 적용하기 ── */
   const handleApply = () => {
     if (!consultData) {
       router.push("/simulation-complete");
@@ -228,12 +284,9 @@ export default function AIStylistPage() {
     }
     const allStyles = consultData.allStyles ?? consultData.style ?? "makeup";
     const idx = consultData.currentStyleIndex ?? 0;
-    router.push(
-      `/simulation-flow?styles=${allStyles}&return=apply&resumeIdx=${idx}`
-    );
+    router.push(`/simulation-flow?styles=${allStyles}&return=apply&resumeIdx=${idx}`);
   };
 
-  /* 사이드바 이미지: AI 수정본 > 선택 이미지 > 기본 이미지 */
   const sidebarImage =
     latestAiImage ??
     consultData?.selectedImage ??
@@ -297,8 +350,10 @@ export default function AIStylistPage() {
           {/* ── 채팅 영역 ── */}
           <div className="lg:col-span-3">
             <Card className="border border-gray-200 bg-white flex flex-col">
-              {/* 메시지 목록: 내용이 늘어나면 카드도 커지고, max-h 이후엔 내부 스크롤 */}
-              <div ref={messagesContainerRef} className="overflow-y-auto p-6 space-y-4 min-h-[260px] max-h-[65vh]">
+              <div
+                ref={messagesContainerRef}
+                className="overflow-y-auto p-6 space-y-4 min-h-[260px] max-h-[65vh]"
+              >
                 {messages.map((msg, idx) => (
                   <div
                     key={idx}
@@ -306,12 +361,11 @@ export default function AIStylistPage() {
                       msg.role === "user" ? "justify-end" : "justify-start"
                     }`}
                   >
-                    <Bubble msg={msg} />
+                    <Bubble msg={msg} onSelectOption={handleSelectOption} />
                   </div>
                 ))}
               </div>
 
-              {/* 입력 + 버튼: 카드가 늘어나도 항상 하단에 고정 */}
               <div className="border-t border-gray-200 p-6 flex-shrink-0">
                 <div className="flex gap-2 mb-4">
                   <Input
