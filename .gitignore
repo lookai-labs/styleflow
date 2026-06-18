@@ -234,7 +234,6 @@ Thumbs.db
 .python-version
 
 # 가중치 파일
-*.pth
 *.pt
 *.ckpt
 *.h5
