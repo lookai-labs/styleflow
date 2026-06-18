@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from backend.app.rag.rag_core.retriever import retrieve_many_docs
@@ -9,6 +10,8 @@ from backend.app.rag.rag_core.schemas import AnalysisGenerationInput, RetrievalQ
 
 CATEGORY_HAIR = "hair"
 CATEGORY_MAKEUP = "makeup"
+
+logger = logging.getLogger(__name__)
 
 
 def _result_contains_style(
@@ -225,7 +228,17 @@ def _generate_hair_analysis_summary(
         ],
     )
 
-    return generate_analysis_answer(generation_input).answer
+    try:
+        return generate_analysis_answer(generation_input).answer
+    except Exception as exc:
+        logger.warning("헤어 분석 생성 실패, fallback 문장 사용: %s", exc, exc_info=True)
+        style_names = ", ".join(style_info["style_name"] for style_info, _ in covered_hair_pairs)
+        return (
+            f"{face_shape} 얼굴형과 {face_proportion} 비율을 기준으로 "
+            f"{style_names} 스타일을 추천할 수 있습니다. "
+            "현재 생성형 분석 모델 연결이 불안정해, 확보된 RAG 검색 결과를 바탕으로 "
+            "보수적인 요약을 제공합니다."
+        )
 
 
 def _generate_makeup_analysis_summary(
@@ -267,7 +280,18 @@ def _generate_makeup_analysis_summary(
         ],
     )
 
-    return generate_analysis_answer(generation_input).answer
+    try:
+        return generate_analysis_answer(generation_input).answer
+    except Exception as exc:
+        logger.warning("메이크업 분석 생성 실패, fallback 문장 사용: %s", exc, exc_info=True)
+        style_names = ", ".join(style_info["style_name"] for style_info, _ in covered_makeup_pairs)
+        tone_text = personal_color or "현재 퍼스널컬러"
+        return (
+            f"{tone_text} 조건에는 {style_names} 계열처럼 피부 톤을 자연스럽게 살리는 "
+            "메이크업 방향을 우선 추천할 수 있습니다. "
+            "현재 생성형 분석 모델 연결이 불안정해, 확보된 RAG 검색 결과를 바탕으로 "
+            "보수적인 요약을 제공합니다."
+        )
 
 
 def generate_analysis_result(
@@ -314,7 +338,20 @@ def generate_analysis_result(
         )
 
     retrieval_queries = hair_queries + makeup_queries
-    retrieval_results = retrieve_many_docs(retrieval_queries)
+    try:
+        retrieval_results = retrieve_many_docs(retrieval_queries)
+    except Exception as exc:
+        logger.warning("RAG 검색 실패, 빈 검색 결과로 fallback: %s", exc, exc_info=True)
+        retrieval_results = [
+            RetrievalResult(
+                query=query.query,
+                documents=[],
+                retrieved_count=0,
+                fallback_stage="error",
+                used_filter={"error": exc.__class__.__name__},
+            )
+            for query in retrieval_queries
+        ]
 
     hair_retrieval_results = retrieval_results[: len(hair_queries)]
     makeup_retrieval_results = retrieval_results[len(hair_queries) :]

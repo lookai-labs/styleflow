@@ -103,3 +103,8 @@ class ChatbotState(TypedDict, total=False):
     retouch_instruction: str | None    # 유저의 리터칭 지시문
     retouch_action: str | None         # "confirm" | "cancel"
     retouched_image_url: str | None    # 리터칭 결과 이미지 URL
+    retouch_request: dict[str, Any] | None
+    retouch_clarity: str | None        # "clear" | "ambiguous"
+    pending_retouch: dict[str, Any] | None
+    retouch_prompt_payload: dict[str, Any] | None
+    retouch_result_image_url: str | None

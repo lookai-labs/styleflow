@@ -13,6 +13,7 @@ from backend.app.rag.chatbot_rag.intents import (
     INTENT_OUTFIT_FIT_CHECK,
     INTENT_OUTFIT_RECOMMENDATION,
     INTENT_SMALLTALK,
+    INTENT_STYLE_RETOUCH,
     INTENT_STYLE_EXPLANATION,
     INTENT_STYLE_FIT,
     INTENT_STYLING_METHOD,
@@ -538,7 +539,25 @@ OUTFIT_EVENT_KEYWORDS = [
 
 # 이미지를 명시적으로 지칭하는 표현
 RETOUCH_EXPLICIT_KEYWORDS = [
+    "리터치",
+    "리터치해줘",
     "리터칭",
+    "보정해줘",
+    "보정해 줘",
+    "적용해줘",
+    "적용해 줘",
+    "합성해줘",
+    "합성해 줘",
+    "예쁘게 바꿔줘",
+    "예쁘게 바꿔 줘",
+    "좀 수정해줘",
+    "좀 수정해 줘",
+    "메이크업 바꿔줘",
+    "메이크업 바꿔 줘",
+    "머리 바꿔줘",
+    "머리 바꿔 줘",
+    "자연스럽게 해줘",
+    "자연스럽게 해 줘",
     "이 이미지",
     "이 사진",
     "이 합성",
@@ -563,6 +582,25 @@ RETOUCH_EDIT_VERBS = [
     "변경해 줘",
     "고쳐줘",
     "고쳐 줘",
+    "적용해줘",
+    "적용해 줘",
+    "합성해줘",
+    "합성해 줘",
+    "보정해줘",
+    "보정해 줘",
+]
+
+RETOUCH_STYLE_TARGET_PHRASES = [
+    "이 헤어로 바꿔",
+    "이 메이크업으로 바꿔",
+    "앞머리만 바꿔",
+    "립을 더 진하게",
+    "립 더 진하게",
+    "피부톤을 자연스럽게",
+    "피부톤 자연스럽게",
+    "선택한",
+    "추천받은",
+    "추천된",
 ]
 
 # 이미지/사진을 지칭하는 명사 (동사와 조합 시만 retouch로 판별)
@@ -582,6 +620,8 @@ def is_retouch_request(message: str) -> bool:
     msg = message.strip().lower()
     if any(kw in msg for kw in RETOUCH_EXPLICIT_KEYWORDS):
         return True
+    if any(phrase in msg for phrase in RETOUCH_STYLE_TARGET_PHRASES):
+        return any(v in msg for v in RETOUCH_EDIT_VERBS) or any(v in msg for v in ["해줘", "해 줘"])
     has_verb = any(v in msg for v in RETOUCH_EDIT_VERBS)
     has_noun = any(n in msg for n in RETOUCH_IMAGE_NOUNS)
     return has_verb and has_noun
@@ -696,6 +736,9 @@ def get_intent_by_keyword(message: str) -> str:
     # 명확한 비교 구조는 maintenance/styling 키워드보다 우선한다.
     if _has_explicit_comparison(normalized_message):
         return INTENT_COMPARISON
+
+    if is_retouch_request(normalized_message):
+        return INTENT_STYLE_RETOUCH
 
     # outfit 키워드가 명시적으로 있으면 mood_selection보다 먼저 잡는다.
     if _is_outfit_request(normalized_message):

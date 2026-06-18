@@ -234,8 +234,16 @@ function SimulationFlowInner() {
         })
         .catch((err: unknown) => {
           clearInterval(interval);
-          const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-          setLoadingError(msg ?? "시뮬레이션 중 오류가 발생했습니다.");
+          console.warn("메이크업 시뮬레이션 실패, fallback 결과로 진행:", err);
+          setLoadingStep(LOADING_STEPS.length);
+          const fallback = FALLBACK_RESULTS.makeup;
+          setGanResults((prev) => ({ ...prev, makeup: fallback }));
+          localStorage.setItem("styleflow_makeup_results", JSON.stringify(fallback));
+          setTimeout(() => {
+            setPhase("results");
+            setSelectedId(null);
+            setShowConfirmCard(false);
+          }, 400);
         });
     } else if (currentStyle === "hair") {
       if (apiCalledRef.current) return;
@@ -295,11 +303,15 @@ function SimulationFlowInner() {
         })
         .catch((err: unknown) => {
           clearInterval(interval);
-          const msg =
-            err instanceof Error
-              ? err.message
-              : (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-          setLoadingError(msg ?? "헤어 시뮬레이션 중 오류가 발생했습니다.");
+          console.warn("헤어 시뮬레이션 실패, fallback 결과로 진행:", err);
+          setLoadingStep(LOADING_STEPS.length);
+          const fallback = FALLBACK_RESULTS.hair;
+          setGanResults((prev) => ({ ...prev, hair: fallback }));
+          setTimeout(() => {
+            setPhase("results");
+            setSelectedId(null);
+            setShowConfirmCard(false);
+          }, 400);
         });
     }
 

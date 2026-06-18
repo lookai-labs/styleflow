@@ -13,6 +13,7 @@ from backend.app.rag.chatbot_rag.intents import (
     INTENT_SMALLTALK,
     INTENT_STYLE_EXPLANATION,
     INTENT_STYLE_FIT,
+    INTENT_STYLE_RETOUCH,
     INTENT_STYLING_METHOD,
     INTENT_UNCLEAR,
 )
@@ -26,6 +27,7 @@ KEYWORD_FIRST_INTENTS = {
     INTENT_MOOD_SELECTION,
     INTENT_STYLE_FIT,      # keyword가 명확히 매치한 경우 semantic이 오버라이드하지 않도록
     INTENT_STYLE_EXPLANATION,  # 지시어+설명 패턴은 키워드 감지 우선
+    INTENT_STYLE_RETOUCH,
     INTENT_IRRELEVANT,
     INTENT_GREETING,
     INTENT_SMALLTALK,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.app.rag.chatbot_rag.intent_keywords import is_retouch_request
 from backend.app.rag.chatbot_rag.state import ChatbotState
 from backend.app.rag.rag_core.schemas import RetrievalResult
 
@@ -113,6 +114,12 @@ def classify_image_intent(state: ChatbotState) -> ChatbotState:
 
     user_message = state.get("user_message", "")
     target_type = state.get("target_type")
+
+    if is_retouch_request(user_message):
+        state["image_intent"] = IMAGE_INTENT_NONE
+        state["image_intent_debug"] = {"reason": "retouch_request_preempts_image_intent"}
+        state["image_is_synthesis_request"] = False
+        return state
 
     result = classify_image_intent_with_llm(
         image_url=image_url,

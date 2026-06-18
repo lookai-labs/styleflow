@@ -392,10 +392,10 @@ def classify_intent(state: ChatbotState) -> ChatbotState:
     target_type = _normalize_target_type(state.get("target_type"))
     category = target_type or detect_question_category(user_message)
 
-    # sim_image_url이 있고 직접 이미지 수정 요청이면 retouch로 선행 분기한다.
-    if state.get("sim_image_url") and is_retouch_request(user_message):
+    # 직접 이미지 수정 요청이면 RAG를 타지 않고 retouch 전용 흐름으로 선행 분기한다.
+    if is_retouch_request(user_message):
         state["intent"] = INTENT_RETOUCH
-        state["intent_debug"] = {"classifier": "retouch_gate", "reason": "sim_image_url+retouch_keyword"}
+        state["intent_debug"] = {"classifier": "retouch_gate", "reason": "retouch_keyword"}
         state["category"] = category
         state["detected_style"] = None
         state["detected_style_is_recommended"] = False
@@ -725,6 +725,9 @@ def update_memory(state: ChatbotState) -> ChatbotState:
     if "pending_outfit_synthesis" in state:
         new_preferences["pending_outfit_synthesis"] = pending_synthesis
 
+    if "pending_retouch" in state:
+        new_preferences["pending_retouch"] = state.get("pending_retouch")
+
     updated_user_profile = merge_user_profile(
         user_profile=state.get("user_profile") or {},
         new_preferences=new_preferences,
@@ -771,6 +774,11 @@ def resolve_pending_selection(state: ChatbotState) -> ChatbotState:
         outfit_context = user_profile.get("outfit_context")
         if outfit_context:
             state["outfit_context"] = outfit_context
+
+    if not state.get("pending_retouch"):
+        pending_retouch = user_profile.get("pending_retouch")
+        if pending_retouch:
+            state["pending_retouch"] = pending_retouch
 
     return state
 
