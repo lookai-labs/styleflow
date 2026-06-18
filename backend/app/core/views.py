@@ -255,14 +255,26 @@ _DUMMY_MAKEUP_STYLES = [
     {'style_name': '봄웜 내추럴 메이크업', 'style_code': 'mk-m-sp-natural', 'makeup_group': 'male_spring_natural'},
 ]
 
+# 추천 로직 미구현 구간 더미 데이터
+_DUMMY_HAIR_RECOMMENDATIONS = [
+    {'style_name': '아이비리그', 'style_code': 'm-03'},
+    {'style_name': '댄디',      'style_code': 'm-08'},
+    {'style_name': '애즈',      'style_code': 'm-12'},
+]
+
+_DUMMY_MAKEUP_MALE = [
+    {'style_name': '봄웜 메이크업', 'style_code': 'mk-m-spring-warm', 'makeup_group': 'male_spring_warm'},
+]
+
 
 @api_view(['POST'])
+@parser_classes([MultiPartParser])
 def analyze(request):
     """
     RAG 기반 분석 결과 요약 생성.
 
-    face_shape, face_point, skin_tone 을 받아 hair/makeup 분석 문장을 반환한다.
-    face analysis 모델이 미구현인 동안은 프론트에서 더미 값을 전송한다.
+    face_image, face_shape, face_point, skin_tone 을 받아
+    AnalysisSession 생성 → RAG 추천 → StyleMappingList 저장 후 결과를 반환한다.
     """
     face_shape = request.data.get('face_shape', 'round')
     face_point = request.data.get('face_point', 'golden')
@@ -272,23 +284,32 @@ def analyze(request):
     face_proportion = _FACE_PROPORTION_MAP.get(face_point, '황금 비율')
     personal_color = _PERSONAL_COLOR_MAP.get(skin_tone, '봄 웜톤')
 
-    recommended_hair_styles = [
-        {
-            'style_name': hs.style_name,
-            'style_code': hs.hair_code or f'H{hs.id}',
-        }
-        for hs in HairStyle.objects.all()
-    ] or _DUMMY_HAIR_STYLES
+    # ① 이미지 저장
+    face_image = request.FILES.get('face_image')
+    image_path = ''
+    if face_image:
+        save_dir = os.path.join(settings.MEDIA_ROOT, 'analyses')
+        os.makedirs(save_dir, exist_ok=True)
+        ext = os.path.splitext(face_image.name)[1] or '.png'
+        filename = f"{uuid.uuid4().hex}{ext}"
+        with open(os.path.join(save_dir, filename), 'wb') as f:
+            for chunk in face_image.chunks():
+                f.write(chunk)
+        image_path = f'analyses/{filename}'
 
-    recommended_makeup_styles = [
-        {
-            'style_name': ms.style_name,
-            'style_code': _MAKEUP_DUMMY_META.get(ms.style_name, {}).get('style_code', f'MS{ms.id}'),
-            'makeup_group': _MAKEUP_DUMMY_META.get(ms.style_name, {}).get('makeup_group', 'general'),
-        }
-        for ms in MakeupStyle.objects.all()
-    ] or _DUMMY_MAKEUP_STYLES
+    # ② AnalysisSession 생성
+    session = AnalysisSession.objects.create(
+        user_id=request.user.id,
+        image_path=image_path,
+        face_shape=face_shape,
+        face_point=face_point,
+        skin_tone=skin_tone,
+    )
 
+    recommended_hair_styles = _DUMMY_HAIR_RECOMMENDATIONS
+    recommended_makeup_styles = _DUMMY_MAKEUP_MALE if gender == 'male' else _DUMMY_MAKEUP_STYLES
+
+    # ③ RAG 호출
     try:
         from backend.app.rag.analysis_rag.service import generate_analysis_result
         result = generate_analysis_result(
@@ -303,12 +324,55 @@ def analyze(request):
         logger.error("RAG 분석 실패: user_id=%s, face_shape=%s, error=%s", request.user.id, face_shape, e, exc_info=True)
         return Response({'error': 'RAG 분석 중 오류가 발생했습니다.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    # ④ StyleMappingList 저장
+    hair_mappings = []
+    for style in recommended_hair_styles:
+        style_name = style['style_name']
+        style_code = style.get('style_code', '')
+        hair_style_obj = (
+            HairStyle.objects.filter(style_name=style_name).first()
+            or HairStyle.objects.filter(hair_code=style_code).first()
+        )
+        mapping = StyleMappingList.objects.create(
+            user_id=request.user.id,
+            analysis_session=session,
+            type='hair',
+            hair_style=hair_style_obj,
+            style_name=style_name,
+        )
+        hair_mappings.append({
+            'id': mapping.id,
+            'style_name': style_name,
+            'style_code': style_code,
+            'image_url': hair_style_obj.image_url if hair_style_obj else '',
+        })
+
+    makeup_mappings = []
+    for style in recommended_makeup_styles:
+        style_name = style['style_name']
+        makeup_style_obj = MakeupStyle.objects.filter(style_name=style_name).first()
+        mapping = StyleMappingList.objects.create(
+            user_id=request.user.id,
+            analysis_session=session,
+            type='makeup',
+            makeup_style=makeup_style_obj,
+            style_name=style_name,
+        )
+        makeup_mappings.append({
+            'id': mapping.id,
+            'style_name': style_name,
+            'image_url': makeup_style_obj.image_url if makeup_style_obj else '',
+        })
+
     return Response({
         'hair_analysis_summary': result['hair_analysis_summary'],
         'makeup_analysis_summary': result.get('makeup_analysis_summary'),
         'face_shape': face_shape,
         'skin_tone': skin_tone,
         'personal_color': personal_color,
+        'analysis_session_id': session.id,
+        'hair_mappings': hair_mappings,
+        'makeup_mappings': makeup_mappings,
     })
 
 

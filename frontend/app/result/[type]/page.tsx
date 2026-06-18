@@ -38,12 +38,28 @@ const SECTION_LABELS = { makeup: "메이크업", hair: "헤어" } as const;
 
 /* ────────────────────────────── */
 
+type StyleMapping = {
+  id: number;
+  style_name: string;
+  style_code?: string;
+  image_url?: string;
+};
+
 type AnalysisResult = {
   hair_analysis_summary: string;
   makeup_analysis_summary: string | null;
   face_shape: string;
   skin_tone: string;
   personal_color: string;
+  analysis_session_id?: number;
+  hair_mappings?: StyleMapping[];
+  makeup_mappings?: StyleMapping[];
+};
+
+const BACKEND_BASE = "http://localhost:8000";
+const toAbsUrl = (url?: string) => {
+  if (!url) return "";
+  return url.startsWith("http") ? url : `${BACKEND_BASE}${url}`;
 };
 
 export default function ResultPage() {
@@ -174,37 +190,53 @@ export default function ResultPage() {
           </div>
 
           <div className="space-y-10">
-            {(["makeup", "hair"] as const).map((category) => (
-              <div key={category}>
-                {/* 카테고리 레이블 */}
-                <div className="flex items-center gap-4 mb-4">
-                  <span className="text-lg font-medium">{SECTION_LABELS[category]}</span>
-                  <div className="flex-1 h-px bg-gray-200" />
-                </div>
+            {(["makeup", "hair"] as const).map((category) => {
+              const apiMappings =
+                category === "hair"
+                  ? analysisResult?.hair_mappings
+                  : analysisResult?.makeup_mappings;
+              const dynamicItems =
+                apiMappings && apiMappings.length > 0
+                  ? apiMappings.map((m) => ({
+                      name: m.style_name,
+                      image: toAbsUrl(m.image_url),
+                      desc: "",
+                    }))
+                  : null;
+              const items = dynamicItems ?? RECOMMENDATIONS[category];
 
-                {/* 추천 카드 3장 */}
-                <div className="grid grid-cols-3 gap-4">
-                  {RECOMMENDATIONS[category].map((item, idx) => (
-                    <Card
-                      key={idx}
-                      className="overflow-hidden border border-gray-200 bg-white group"
-                    >
-                      <div className="relative overflow-hidden">
-                        <img
-                          src={item.image}
-                          alt={item.name}
-                          className="w-full h-56 object-cover transition-transform duration-500 group-hover:scale-105"
-                        />
-                      </div>
-                      <div className="p-4">
-                        <h3 className="font-medium text-sm mb-0.5">{item.name}</h3>
-                        <p className="text-xs text-gray-400">{item.desc}</p>
-                      </div>
-                    </Card>
-                  ))}
+              return (
+                <div key={category}>
+                  {/* 카테고리 레이블 */}
+                  <div className="flex items-center gap-4 mb-4">
+                    <span className="text-lg font-medium">{SECTION_LABELS[category]}</span>
+                    <div className="flex-1 h-px bg-gray-200" />
+                  </div>
+
+                  {/* 추천 카드 */}
+                  <div className="grid grid-cols-3 gap-4">
+                    {items.map((item, idx) => (
+                      <Card
+                        key={idx}
+                        className="overflow-hidden border border-gray-200 bg-white group"
+                      >
+                        <div className="relative overflow-hidden">
+                          <img
+                            src={item.image}
+                            alt={item.name}
+                            className="w-full h-56 object-cover transition-transform duration-500 group-hover:scale-105"
+                          />
+                        </div>
+                        <div className="p-4">
+                          <h3 className="font-medium text-sm mb-0.5">{item.name}</h3>
+                          {item.desc && <p className="text-xs text-gray-400">{item.desc}</p>}
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
 

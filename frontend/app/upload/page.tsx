@@ -75,34 +75,53 @@ function UploadPageInner() {
     setTimeout(async () => {
       setIsAnalyzing(true);
 
-      // RAG 분석 API 호출 — 실패해도 더미 데이터로 진행
-      try {
-        const res = await api.post("/analyze/", {
-          face_shape: "round",
-          face_point: "golden",
-          skin_tone: "spring",
-        });
-        localStorage.setItem(
-          "styleflow_analysis_result",
-          JSON.stringify(res.data)
-        );
-      } catch (e) {
-        console.warn("RAG 분석 실패, 더미 데이터로 진행:", e);
-        localStorage.removeItem("styleflow_analysis_result");
+      // API 호출과 애니메이션을 병렬 실행, 둘 다 끝나면 이동
+      const formData = new FormData();
+      formData.append("face_shape", "round");
+      formData.append("face_point", "golden");
+      formData.append("skin_tone", "spring");
+
+      if (uploadedFile) {
+        formData.append("face_image", uploadedFile);
+      } else {
+        const faceDataUrl = localStorage.getItem("styleflow_face_image");
+        if (faceDataUrl) {
+          const [header, base64] = faceDataUrl.split(",");
+          const mime = header.match(/:(.*?);/)?.[1] ?? "image/jpeg";
+          const binary = atob(base64);
+          const arr = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
+          const blob = new Blob([arr], { type: mime });
+          formData.append("face_image", new File([blob], "face.jpg", { type: mime }));
+        }
       }
 
-      let step = 0;
-      intervalRef.current = setInterval(() => {
-        step++;
-        setCurrentStep(step);
-        if (step >= analysisSteps.length) {
-          if (intervalRef.current) clearInterval(intervalRef.current);
-          intervalRef.current = null;
-          setTimeout(() => {
-            router.push(`/result/${type}`);
-          }, 500);
-        }
-      }, 800);
+      const apiCall = api.post("/analyze/", formData)
+        .then((res) => {
+          localStorage.setItem("styleflow_analysis_result", JSON.stringify(res.data));
+        })
+        .catch((e) => {
+          console.warn("RAG 분석 실패, 더미 데이터로 진행:", e);
+          localStorage.removeItem("styleflow_analysis_result");
+        });
+
+      const animation = new Promise<void>((resolve) => {
+        let step = 0;
+        intervalRef.current = setInterval(() => {
+          step++;
+          setCurrentStep(step);
+          if (step >= analysisSteps.length) {
+            if (intervalRef.current) clearInterval(intervalRef.current);
+            intervalRef.current = null;
+            resolve();
+          }
+        }, 800);
+      });
+
+      await Promise.all([apiCall, animation]);
+      setTimeout(() => {
+        router.push(`/result/${type}`);
+      }, 500);
     }, 300);
   };
 
