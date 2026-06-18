@@ -186,39 +186,84 @@ def _download_image(url: str) -> tuple[bytes, str]:
 
 
 def _build_retouch_prompt(payload: dict[str, Any]) -> str:
-    req = payload.get("retouch_request", {})
+    req = payload.get("retouch_request", {}) or {}
     target = req.get("target", "overall")
-    change = req.get("requested_change", "")
+    change = (req.get("requested_change") or "").strip()
     selected = req.get("selected_style") or {}
-    up = payload.get("user_profile", {})
+    up = payload.get("user_profile", {}) or {}
 
-    target_label = {
-        "hair": "hairstyle",
-        "makeup": "makeup",
-        "partial": "partial beauty",
-        "overall": "overall beauty",
-    }.get(target, "overall beauty")
+    style_name = selected.get("style_name")
+    style_features = selected.get("style_features") or selected.get("features") or []
 
-    parts = [
-        "Portrait photo of a real person.",
+    parts: list[str] = [
+        "You are a professional beauty retouching AI. "
+        "Edit ONLY the specified area of the person in the attached photo. "
+        "The person's identity, face shape, facial features, skin tone, expression, "
+        "pose, outfit, and background MUST remain exactly the same. "
+        "Do NOT replace or alter the person."
     ]
 
+    user_info: list[str] = []
     gender_map = {"남성": "male", "여성": "female"}
     if up.get("gender"):
-        parts.append(f"Gender: {gender_map.get(up['gender'], up['gender'])}.")
+        user_info.append(f"gender: {gender_map.get(up['gender'], up['gender'])}")
     if up.get("face_shape"):
-        parts.append(f"Face shape: {up['face_shape']}.")
+        user_info.append(f"face shape: {up['face_shape']}")
     if up.get("personal_color"):
-        parts.append(f"Personal color season: {up['personal_color']}.")
+        user_info.append(f"personal color season: {up['personal_color']}")
+    if up.get("skin_tone"):
+        user_info.append(f"skin tone: {up['skin_tone']}")
+    if user_info:
+        parts.append("Subject info — " + ", ".join(user_info) + ".")
 
-    if selected.get("style_name"):
-        parts.append(f"Applied {target_label}: {selected['style_name']}.")
+    if style_name:
+        parts.append(f"Target style to apply: {style_name}.")
 
-    parts.append(f"Style change — {target_label}: {change}.")
+    if style_features:
+        features_text = (
+            ", ".join(str(x) for x in style_features if x)
+            if isinstance(style_features, list)
+            else str(style_features)
+        )
+        if features_text:
+            parts.append(f"Visual features to apply: {features_text}.")
+
+    if target == "hair":
+        if not change:
+            change = "apply the selected hairstyle naturally"
+        parts.append(
+            f"EDIT ONLY the hairstyle. Change: {change}. "
+            "You may adjust hair length, bangs, parting, volume, curl, and texture. "
+            "Do NOT touch makeup, skin, facial structure, expression, outfit, or background."
+        )
+    elif target == "makeup":
+        if not change:
+            change = "apply the selected makeup style naturally"
+        parts.append(
+            f"EDIT ONLY the makeup. Change: {change}. "
+            "You may adjust foundation, lip color, blush, eye makeup, contouring, and highlighting. "
+            "Do NOT touch hairstyle, facial structure, expression, outfit, or background."
+        )
+    elif target == "partial":
+        if not change:
+            change = "apply the requested partial adjustment naturally"
+        parts.append(
+            f"EDIT ONLY the requested detail. Change: {change}. "
+            "Do NOT modify hair, makeup, face shape, outfit, or background."
+        )
+    else:
+        if not change:
+            change = "apply natural overall beauty retouching"
+        parts.append(
+            f"Apply subtle overall beauty retouching. Change: {change}. "
+            "Keep the person's identity fully intact. Do not over-retouch."
+        )
+
     parts.append(
-        "Natural, realistic photo quality. "
-        "Face structure, expression, and background unchanged. "
-        "Skin tone not overly altered."
+        "Hard constraints: preserve face shape, eyes, nose, mouth, expression, pose, and background. "
+        "Do not over-smooth skin. Do not alter body shape. "
+        "Do not add accessories or decorations not requested. "
+        "The result must look like a natural real photograph."
     )
 
     return " ".join(parts)
@@ -235,7 +280,9 @@ def _save_image_to_media(image_data: bytes, mime_type: str) -> str:
 
 
 def _call_gemini_image_edit(payload: dict[str, Any]) -> str:
-    """Generate a retouched image via Gemini image model and return the saved media URL."""
+    """Edit the source image via Gemini and return the saved media URL."""
+    source_url = payload["source_image_url"]
+    image_bytes, mime_type = _download_image(source_url)
     prompt_text = _build_retouch_prompt(payload)
 
     client = genai.Client(
@@ -245,7 +292,15 @@ def _call_gemini_image_edit(payload: dict[str, Any]) -> str:
 
     response = client.models.generate_content(
         model=GEMINI_IMAGE_MODEL,
-        contents=prompt_text,
+        contents=[
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                    types.Part.from_text(text=prompt_text),
+                ],
+            )
+        ],
         config=types.GenerateContentConfig(
             response_modalities=["IMAGE"],
             candidate_count=1,
@@ -254,8 +309,8 @@ def _call_gemini_image_edit(payload: dict[str, Any]) -> str:
 
     for part in response.candidates[0].content.parts:
         if part.inline_data:
-            mime_type = part.inline_data.mime_type or "image/png"
-            return _save_image_to_media(part.inline_data.data, mime_type)
+            result_mime = part.inline_data.mime_type or "image/png"
+            return _save_image_to_media(part.inline_data.data, result_mime)
 
     raise ValueError("Gemini 이미지 응답에서 이미지를 찾을 수 없습니다.")
 
