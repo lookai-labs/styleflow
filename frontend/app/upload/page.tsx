@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Upload, Check, Camera, Sun, User, Image as ImageIcon } from "lucide-react";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
+import api from "@/lib/api";
 
 const analysisSteps = [
   "얼굴 영역 감지 중",
@@ -74,11 +75,20 @@ function UploadPageInner() {
     setTimeout(async () => {
       setIsAnalyzing(true);
 
-      // 백엔드 API로 이미지 업로드 (선택적)
-      if (uploadedFile) {
-        try {
-          // 분석 API — 현재 미구현으로 실패해도 데모 모드로 진행
-        } catch {}
+      // RAG 분석 API 호출 — 실패해도 더미 데이터로 진행
+      try {
+        const res = await api.post("/analyze/", {
+          face_shape: "round",
+          face_point: "golden",
+          skin_tone: "spring",
+        });
+        localStorage.setItem(
+          "styleflow_analysis_result",
+          JSON.stringify(res.data)
+        );
+      } catch (e) {
+        console.warn("RAG 분석 실패, 더미 데이터로 진행:", e);
+        localStorage.removeItem("styleflow_analysis_result");
       }
 
       let step = 0;

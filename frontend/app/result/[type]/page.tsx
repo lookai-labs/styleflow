@@ -8,12 +8,10 @@ import { Badge } from "@/components/ui/badge";
 import { Sparkles, Check } from "lucide-react";
 import { StylingSelectionModal } from "@/components/StylingSelectionModal";
 
-/* ── 분석 결과 데이터 (하드코딩) ── */
-const ANALYSIS = {
+/* ── 컬러 팔레트는 퍼스널컬러와 무관하게 고정 표시 ── */
+const ANALYSIS_FALLBACK = {
   faceShape: "둥근형",
-  faceDesc: "부드럽고 온화한 인상으로, 레이어드 스타일과 옆 볼륨 헤어가 얼굴 균형을 보완합니다.",
   skinTone: "웜톤",
-  skinDesc: "따뜻한 황금빛 피부톤으로 코랄, 베이지, 웜 브라운 계열이 자연스럽게 어울립니다.",
   colors: [
     { name: "웜 코랄",  hex: "#D4826A" },
     { name: "베이지",   hex: "#C9A882" },
@@ -40,17 +38,35 @@ const SECTION_LABELS = { makeup: "메이크업", hair: "헤어" } as const;
 
 /* ────────────────────────────── */
 
+type AnalysisResult = {
+  hair_analysis_summary: string;
+  makeup_analysis_summary: string | null;
+  face_shape: string;
+  skin_tone: string;
+  personal_color: string;
+};
+
 export default function ResultPage() {
   const router = useRouter();
   const params = useParams();
   const type = params.type as "face" | "outfit";
   const [showStylingSelection, setShowStylingSelection] = useState(false);
   const [faceImage, setFaceImage] = useState<string>("");
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
 
   useEffect(() => {
     window.scrollTo(0, 0);
-    const saved = localStorage.getItem("styleflow_face_image");
-    if (saved) setFaceImage(saved);
+    const savedImage = localStorage.getItem("styleflow_face_image");
+    if (savedImage) setFaceImage(savedImage);
+
+    const savedResult = localStorage.getItem("styleflow_analysis_result");
+    if (savedResult) {
+      try {
+        setAnalysisResult(JSON.parse(savedResult));
+      } catch {
+        // 파싱 실패 시 폴백 데이터 사용
+      }
+    }
   }, []);
 
   const handleStylingConfirm = (selected: { makeup: boolean; hair: boolean }) => {
@@ -100,24 +116,38 @@ export default function ResultPage() {
               <Card className="p-6 border border-gray-200 bg-white">
                 <div className="flex items-start justify-between mb-3">
                   <span className="text-xs font-semibold tracking-widest text-gray-400 uppercase">얼굴형</span>
-                  <span className="text-lg font-medium">{ANALYSIS.faceShape}</span>
+                  <span className="text-lg font-medium">{ANALYSIS_FALLBACK.faceShape}</span>
                 </div>
-                <p className="text-sm text-gray-600 leading-relaxed">{ANALYSIS.faceDesc}</p>
+                {analysisResult ? (
+                  <p className="text-sm text-gray-600 leading-relaxed">
+                    {analysisResult.hair_analysis_summary}
+                  </p>
+                ) : (
+                  <p className="text-sm text-red-400">분석 실패</p>
+                )}
               </Card>
 
               {/* 피부톤 */}
               <Card className="p-6 border border-gray-200 bg-white">
                 <div className="flex items-start justify-between mb-3">
                   <span className="text-xs font-semibold tracking-widest text-gray-400 uppercase">피부톤</span>
-                  <span className="text-lg font-medium">{ANALYSIS.skinTone}</span>
+                  <span className="text-lg font-medium">
+                    {analysisResult?.personal_color ?? ANALYSIS_FALLBACK.skinTone}
+                  </span>
                 </div>
-                <p className="text-sm text-gray-600 leading-relaxed mb-4">{ANALYSIS.skinDesc}</p>
+                {analysisResult ? (
+                  <p className="text-sm text-gray-600 leading-relaxed mb-4">
+                    {analysisResult.makeup_analysis_summary ?? "메이크업 분석 데이터가 없습니다."}
+                  </p>
+                ) : (
+                  <p className="text-sm text-red-400 mb-4">분석 실패</p>
+                )}
 
                 {/* 퍼스널 컬러 칩 */}
                 <div className="border-t border-gray-100 pt-4">
                   <span className="text-xs text-gray-400 mb-3 block">추천 컬러 팔레트</span>
                   <div className="flex gap-3">
-                    {ANALYSIS.colors.map((color) => (
+                    {ANALYSIS_FALLBACK.colors.map((color) => (
                       <div key={color.name} className="flex flex-col items-center gap-1.5">
                         <div
                           className="w-9 h-9 rounded-full border border-gray-200 shadow-sm"

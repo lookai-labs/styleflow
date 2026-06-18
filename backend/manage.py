@@ -2,6 +2,11 @@
 """Django's command-line utility for administrative tasks."""
 import os
 import sys
+from pathlib import Path
+
+# backend 패키지를 'from backend.app...' 형식으로 임포트할 수 있도록
+# backend/ 의 부모 디렉토리를 sys.path 맨 앞에 추가한다.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def main():
