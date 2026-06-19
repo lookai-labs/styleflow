@@ -16,11 +16,11 @@ jobs:
           BEHIND_COUNT=$(git rev-list --count HEAD..origin/main)
 
           if [ "$BEHIND_COUNT" -gt 0 ]; then
-            echo "이 branch는 main보다 $BEHIND_COUNT 개의 커밋이 뒤처져 있습니다!"
+            echo "이 branch는 main보다 $BEHIND_COUNT 개의 commit이 뒤처져 있습니다"
             echo "로컬에서 'git merge main' 또는 'git rebase main'을 실행해 최신화해주세요."
             exit 1
           else
-            echo "최신 main 상태와 일치합니다."
+            echo "최신 main 상태와 일치"
           fi
   django-check:
     runs-on: ubuntu-latest
@@ -39,6 +39,6 @@ jobs:
       - name: pip 업그레이드
         run: python -m pip install --upgrade pip
       - name: 패키지 설치
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt --use-deprecated=legacy-resolver
       - name: Django 문법 및 설정 체크
         run: python backend/manage.py check
