@@ -302,11 +302,20 @@ def build_outfit_synthesis_prompt_text(payload: dict[str, Any]) -> str:
 요청 상황: {occasion_label}
 요청 의상 방향: {requested_change}
 
-얼굴, 헤어스타일, 메이크업, 표정, 포즈, 배경은 유지해 주세요.
+중요: 인물은 얼굴부터 발끝까지 모두 보이는 전신 구도로 보여 주세요.
+신발까지 포함해서 전신이 한 화면 안에 들어오게 해 주세요.
+인물이 잘리지 않도록 하고, 상반신 클로즈업이나 허리 위 구도가 아니라 세로형 전신 패션 사진처럼 구성해 주세요.
+
+얼굴, 헤어스타일, 메이크업, 표정, 포즈의 전체적인 느낌은 유지해 주세요.
+배경은 최대한 자연스럽게 유지해 주세요.
 의상은 {personal_color} 퍼스널컬러와 조화되게 연출해 주세요.
 상황에 맞는 격식과 분위기를 반영해 주세요.
-실제 촬영된 자연스러운 인물 사진처럼 보이게 해 주세요.
+실제 촬영된 자연스러운 전신 인물 사진처럼 보이게 해 주세요.
 
 Only change the outfit.
-Preserve face, hairstyle, makeup, expression, pose, and background.
+Show the full body from head to toe.
+Include face, full outfit, legs, and shoes in the frame.
+Do not crop the person.
+Use a full-body fashion portrait composition.
+Preserve face, hairstyle, makeup, expression, pose, and background as much as possible.
 {preserve_str}""".strip()
