@@ -1,8 +1,27 @@
-name: Django Pip CI
+name: Django CI & Branch Check
 on:
   pull_request:
     branches: ["main"]
 jobs:
+  check-behind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 가져오기
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: main 최신화 체크
+        run: |
+          git fetch origin main
+          BEHIND_COUNT=$(git rev-list --count HEAD..origin/main)
+
+          if [ "$BEHIND_COUNT" -gt 0 ]; then
+            echo "이 branch는 main보다 $BEHIND_COUNT 개의 commit이 뒤처져 있습니다"
+            echo "로컬에서 'git merge main' 또는 'git rebase main'을 실행해 최신화해주세요."
+            exit 1
+          else
+            echo "최신 main 상태와 일치"
+          fi
   django-check:
     runs-on: ubuntu-latest
     env:
