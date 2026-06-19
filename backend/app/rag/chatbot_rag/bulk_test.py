@@ -15,12 +15,18 @@ from backend.app.rag.chatbot_rag.image_nodes import (
     IMAGE_INTENT_SYNTHESIS,
 )
 from backend.app.rag.chatbot_rag.intent_classifier import get_intent
-from backend.app.rag.chatbot_rag.intent_keywords import detect_question_category
+from backend.app.rag.chatbot_rag.intent_keywords import (
+    detect_category_conflict,
+    detect_natural_retouch_target,
+    detect_question_category,
+)
 from backend.app.rag.chatbot_rag.intents import (
     CATEGORY_HAIR,
     CATEGORY_MAKEUP,
+    INTENT_CATEGORY_CONFLICT,
     INTENT_MOOD_CHOICE,
     INTENT_MOOD_SELECTION,
+    INTENT_RETOUCH,
     INTENT_STYLE_EXPLANATION,
     PENDING_SELECTION_MOOD,
 )
@@ -775,6 +781,213 @@ def run_mood_two_turn_test(
     return first_result, second_result
 
 
+# ---------------------------------------------------------------------------
+# 카테고리 충돌 테스트 케이스 — target_type 고정 상태에서 반대 카테고리 요청
+# ---------------------------------------------------------------------------
+
+CATEGORY_CONFLICT_TEST_CASES: list[dict] = [
+    # 헤어 채팅에서 메이크업 요청
+    {
+        "label": "hair_chat — 립 색 변경 요청 (메이크업 부위)",
+        "user_message": "입술을 빨갛게 만들고 싶어",
+        "target_type": CATEGORY_HAIR,
+        "expected_intent": INTENT_CATEGORY_CONFLICT,
+    },
+    {
+        "label": "hair_chat — 아이라인 질문 (메이크업 부위)",
+        "user_message": "아이라인 어떻게 그려야 해?",
+        "target_type": CATEGORY_HAIR,
+        "expected_intent": INTENT_CATEGORY_CONFLICT,
+    },
+    {
+        "label": "hair_chat — 블러셔 연출 질문 (메이크업 부위)",
+        "user_message": "블러셔 자연스럽게 연출하는 방법 알려줘",
+        "target_type": CATEGORY_HAIR,
+        "expected_intent": INTENT_CATEGORY_CONFLICT,
+    },
+    # 메이크업 채팅에서 헤어 요청
+    {
+        "label": "makeup_chat — 앞머리 내리고 싶어 (헤어 부위)",
+        "user_message": "앞머리를 내리고 싶어",
+        "target_type": CATEGORY_MAKEUP,
+        "expected_intent": INTENT_CATEGORY_CONFLICT,
+    },
+    {
+        "label": "makeup_chat — 컬 살리는 방법 (헤어 부위)",
+        "user_message": "컬 살리는 방법 알려줘",
+        "target_type": CATEGORY_MAKEUP,
+        "expected_intent": INTENT_CATEGORY_CONFLICT,
+    },
+    # 충돌 없어야 하는 케이스
+    {
+        "label": "hair_chat — 헤어 어울림 질문 (충돌 없음)",
+        "user_message": "이 스타일 내 얼굴형에 어울려?",
+        "target_type": CATEGORY_HAIR,
+        "expected_intent": None,  # INTENT_CATEGORY_CONFLICT이 아니어야 함
+    },
+    {
+        "label": "makeup_chat — 메이크업 연출 질문 (충돌 없음)",
+        "user_message": "이 메이크업 연출 방법 알려줘",
+        "target_type": CATEGORY_MAKEUP,
+        "expected_intent": None,
+    },
+]
+
+# ---------------------------------------------------------------------------
+# 자연어 리터치 감지 테스트 케이스
+# ---------------------------------------------------------------------------
+
+NATURAL_RETOUCH_TEST_CASES: list[dict] = [
+    {
+        "label": "natural_retouch — 입술 빨갛게 (메이크업 채팅)",
+        "user_message": "입술을 빨갛게 만들고 싶어",
+        "target_type": CATEGORY_MAKEUP,
+        "expected_intent": INTENT_RETOUCH,
+        "expected_target": CATEGORY_MAKEUP,
+    },
+    {
+        "label": "natural_retouch — 아이라인 진하게 (메이크업 채팅)",
+        "user_message": "아이라인 더 진하게 해줘",
+        "target_type": CATEGORY_MAKEUP,
+        "expected_intent": INTENT_RETOUCH,
+        "expected_target": CATEGORY_MAKEUP,
+    },
+    {
+        "label": "natural_retouch — 앞머리 내리기 (헤어 채팅)",
+        "user_message": "앞머리를 내리고 싶어",
+        "target_type": CATEGORY_HAIR,
+        "expected_intent": INTENT_RETOUCH,
+        "expected_target": CATEGORY_HAIR,
+    },
+    {
+        "label": "natural_retouch — 컬 볼륨 더 강하게 (헤어 채팅)",
+        "user_message": "컬을 더 강하게 해줘",
+        "target_type": CATEGORY_HAIR,
+        "expected_intent": INTENT_RETOUCH,
+        "expected_target": CATEGORY_HAIR,
+    },
+    {
+        "label": "natural_retouch_detect — 립 색 변경",
+        "user_message": "립을 갈색으로 바꿔줘",
+        "expected_target": CATEGORY_MAKEUP,
+    },
+    {
+        "label": "natural_retouch_detect — 앞머리 기장",
+        "user_message": "앞머리를 짧게 하고 싶어",
+        "expected_target": CATEGORY_HAIR,
+    },
+    {
+        "label": "natural_retouch_detect — 관련 없는 문장 (None)",
+        "user_message": "이 스타일 나한테 어울려?",
+        "expected_target": None,
+    },
+]
+
+
+def format_conflict_test_log(
+    *,
+    index: int,
+    total: int,
+    case: dict,
+    actual_conflict: bool,
+    actual_intent: str | None,
+) -> str:
+    expected = case.get("expected_intent")
+    if expected == INTENT_CATEGORY_CONFLICT:
+        passed = actual_conflict
+    else:
+        passed = not actual_conflict
+    pass_label = "PASS" if passed else f"FAIL (expected_conflict={expected == INTENT_CATEGORY_CONFLICT}, actual_conflict={actual_conflict})"
+
+    return "\n".join(
+        [
+            "=" * 100,
+            f"[CONFLICT {index}/{total}] {case['label']}",
+            f"user_message: {case['user_message']}",
+            f"target_type: {case.get('target_type')}",
+            f"expected_intent: {expected}",
+            f"actual_conflict: {actual_conflict}",
+            f"actual_intent: {actual_intent}",
+            f"RESULT: {pass_label}",
+            "",
+        ]
+    )
+
+
+def run_conflict_tests(logs: list[str]) -> tuple[int, int]:
+    total = len(CATEGORY_CONFLICT_TEST_CASES)
+    pass_count = 0
+
+    logs.append("=" * 100)
+    logs.append(f"[카테고리 충돌 테스트] 총 {total}개")
+    logs.append("=" * 100)
+    logs.append("")
+
+    for index, case in enumerate(CATEGORY_CONFLICT_TEST_CASES, start=1):
+        target_type = case.get("target_type")
+        msg = case["user_message"]
+        actual_conflict = detect_category_conflict(msg, target_type)
+        actual_intent = INTENT_CATEGORY_CONFLICT if actual_conflict else None
+
+        expected = case.get("expected_intent")
+        if expected == INTENT_CATEGORY_CONFLICT:
+            passed = actual_conflict
+        else:
+            passed = not actual_conflict
+        if passed:
+            pass_count += 1
+
+        logs.append(
+            format_conflict_test_log(
+                index=index,
+                total=total,
+                case=case,
+                actual_conflict=actual_conflict,
+                actual_intent=actual_intent,
+            )
+        )
+        status = "PASS" if passed else "FAIL"
+        print(f"[CONFLICT {index}/{total}] {status} — {case['label']}, conflict={actual_conflict}")
+
+    return pass_count, total
+
+
+def run_natural_retouch_tests(logs: list[str]) -> tuple[int, int]:
+    total = len(NATURAL_RETOUCH_TEST_CASES)
+    pass_count = 0
+
+    logs.append("=" * 100)
+    logs.append(f"[자연어 리터치 감지 테스트] 총 {total}개")
+    logs.append("=" * 100)
+    logs.append("")
+
+    for index, case in enumerate(NATURAL_RETOUCH_TEST_CASES, start=1):
+        msg = case["user_message"]
+        actual_target = detect_natural_retouch_target(msg)
+        expected_target = case.get("expected_target")
+        passed = actual_target == expected_target
+        if passed:
+            pass_count += 1
+
+        pass_label = "PASS" if passed else f"FAIL (expected={expected_target}, actual={actual_target})"
+        log_line = "\n".join(
+            [
+                "=" * 100,
+                f"[RETOUCH_DETECT {index}/{total}] {case['label']}",
+                f"user_message: {msg}",
+                f"expected_target: {expected_target}",
+                f"actual_target: {actual_target}",
+                f"RESULT: {pass_label}",
+                "",
+            ]
+        )
+        logs.append(log_line)
+        status = "PASS" if passed else "FAIL"
+        print(f"[RETOUCH_DETECT {index}/{total}] {status} — {case['label']}, target={actual_target}")
+
+    return pass_count, total
+
+
 def main() -> None:
     cases = load_questions(QUESTION_FILE)
 
@@ -906,12 +1119,22 @@ def main() -> None:
     print()
     image_pass_count, image_total = run_image_tests(logs)
 
+    # 카테고리 충돌 테스트
+    print()
+    conflict_pass_count, conflict_total = run_conflict_tests(logs)
+
+    # 자연어 리터치 감지 테스트
+    print()
+    retouch_detect_pass_count, retouch_detect_total = run_natural_retouch_tests(logs)
+
     finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     logs.append("=" * 100)
     logs.append(f"chatbot_rag bulk test finished_at={finished_at}")
     logs.append(f"style_explanation_test_pass={explanation_pass_count}/{explanation_total}")
     logs.append(f"image_test_pass={image_pass_count}/{image_total}")
+    logs.append(f"category_conflict_test_pass={conflict_pass_count}/{conflict_total}")
+    logs.append(f"natural_retouch_detect_test_pass={retouch_detect_pass_count}/{retouch_detect_total}")
     logs.append("=" * 100)
 
     LOG_FILE.write_text("\n".join(logs), encoding="utf-8")
@@ -920,6 +1143,8 @@ def main() -> None:
     print(f"텍스트 테스트: {total}개 + 2턴 mood 선택 테스트 {len(two_turn_tests)}개")
     print(f"style_explanation 테스트: {explanation_pass_count}/{explanation_total} PASS")
     print(f"이미지 테스트: {image_pass_count}/{image_total} PASS")
+    print(f"카테고리 충돌 테스트: {conflict_pass_count}/{conflict_total} PASS")
+    print(f"자연어 리터치 감지 테스트: {retouch_detect_pass_count}/{retouch_detect_total} PASS")
     print(f"intent_only={INTENT_ONLY}")
     print("hair_makeup_split=True")
     print(f"로그 저장 위치: {LOG_FILE}")

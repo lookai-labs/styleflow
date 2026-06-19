@@ -7,6 +7,8 @@ from backend.app.rag.chatbot_rag.bypass_gate import get_bypass_response
 from backend.app.rag.chatbot_rag.intent_classifier import get_intent
 from backend.app.rag.chatbot_rag.intent_keywords import (
     _extract_outfit_context_from_message,
+    detect_category_conflict,
+    detect_natural_retouch_target,
     detect_question_category,
     is_followup_recommendation,
     is_memory_recall,
@@ -15,6 +17,7 @@ from backend.app.rag.chatbot_rag.intent_keywords import (
 from backend.app.rag.chatbot_rag.intents import (
     CATEGORY_HAIR,
     CATEGORY_MAKEUP,
+    INTENT_CATEGORY_CONFLICT,
     INTENT_FOLLOWUP_RECOMMENDATION,
     INTENT_GENERAL_FOLLOWUP,
     INTENT_GREETING,
@@ -50,6 +53,8 @@ from backend.app.rag.chatbot_rag.selection_options import (
 )
 from backend.app.rag.chatbot_rag.static_responses import (
     CLARIFICATION_OPTIONS,
+    HAIR_CLARIFICATION_OPTIONS,
+    MAKEUP_CLARIFICATION_OPTIONS,
     MISSING_ANALYSIS_MESSAGE,
     MISSING_APPLIED_STYLE_MESSAGE,
     build_clarification_message,
@@ -64,6 +69,18 @@ from backend.app.rag.rag_core.generator import (
 )
 from backend.app.rag.rag_core.retriever import retrieve_docs
 from backend.app.rag.rag_core.schemas import ChatGenerationInput, RetrievalResult
+
+
+def _build_conflict_message(target_type: str) -> str:
+    if target_type == CATEGORY_HAIR:
+        return (
+            "이 채팅은 헤어 스타일 전용입니다. "
+            "메이크업 관련 질문은 메이크업 채팅에서 이용해 주세요."
+        )
+    return (
+        "이 채팅은 메이크업 전용입니다. "
+        "헤어 관련 질문은 헤어 채팅에서 이용해 주세요."
+    )
 
 
 def check_analysis_exists(state: ChatbotState) -> ChatbotState:
@@ -141,7 +158,7 @@ def ask_clarification(state: ChatbotState) -> ChatbotState:
     질문 의도가 불명확할 때 객관식 재질문을 반환한다.
     """
 
-    state["answer"] = build_clarification_message()
+    state["answer"] = build_clarification_message(state.get("category"))
     state["retrieval_result"] = RetrievalResult(
         query=state.get("user_message", ""),
         documents=[],
@@ -409,9 +426,53 @@ def classify_intent(state: ChatbotState) -> ChatbotState:
 
     # 직접 이미지 수정 요청이면 RAG를 타지 않고 retouch 전용 흐름으로 선행 분기한다.
     if is_retouch_request(user_message):
+        if target_type and detect_category_conflict(user_message, target_type):
+            state["intent"] = INTENT_CATEGORY_CONFLICT
+            state["intent_debug"] = {"classifier": "conflict_gate", "reason": "retouch_category_conflict"}
+            state["category"] = category
+            state["answer"] = _build_conflict_message(target_type)
+            state["detected_style"] = None
+            state["detected_style_is_recommended"] = False
+            state["needs_clarification"] = False
+            state["clarification_options"] = []
+            return state
         state["intent"] = INTENT_RETOUCH
         state["intent_debug"] = {"classifier": "retouch_gate", "reason": "retouch_keyword"}
         state["category"] = category
+        state["detected_style"] = None
+        state["detected_style_is_recommended"] = False
+        state["needs_clarification"] = False
+        state["clarification_options"] = []
+        return state
+
+    # 자연어 뷰티 변화 요청 — (부위 키워드 + 변화 표현) 조합
+    natural_retouch_target = detect_natural_retouch_target(user_message)
+    if natural_retouch_target:
+        if target_type and natural_retouch_target != target_type:
+            state["intent"] = INTENT_CATEGORY_CONFLICT
+            state["intent_debug"] = {"classifier": "conflict_gate", "reason": "natural_retouch_category_conflict"}
+            state["category"] = category
+            state["answer"] = _build_conflict_message(target_type)
+            state["detected_style"] = None
+            state["detected_style_is_recommended"] = False
+            state["needs_clarification"] = False
+            state["clarification_options"] = []
+            return state
+        state["intent"] = INTENT_RETOUCH
+        state["intent_debug"] = {"classifier": "natural_retouch_gate", "reason": "part_keyword+change_keyword"}
+        state["category"] = natural_retouch_target
+        state["detected_style"] = None
+        state["detected_style_is_recommended"] = False
+        state["needs_clarification"] = False
+        state["clarification_options"] = []
+        return state
+
+    # 카테고리 충돌 — 리터치가 아닌 일반 질문에서 반대 카테고리 부위 언급
+    if target_type and detect_category_conflict(user_message, target_type):
+        state["intent"] = INTENT_CATEGORY_CONFLICT
+        state["intent_debug"] = {"classifier": "conflict_gate", "reason": "category_conflict"}
+        state["category"] = category
+        state["answer"] = _build_conflict_message(target_type)
         state["detected_style"] = None
         state["detected_style_is_recommended"] = False
         state["needs_clarification"] = False
@@ -487,7 +548,12 @@ def classify_intent(state: ChatbotState) -> ChatbotState:
 
     if intent == INTENT_UNCLEAR:
         state["needs_clarification"] = True
-        state["clarification_options"] = CLARIFICATION_OPTIONS
+        if category == CATEGORY_MAKEUP:
+            state["clarification_options"] = MAKEUP_CLARIFICATION_OPTIONS
+        elif category == CATEGORY_HAIR:
+            state["clarification_options"] = HAIR_CLARIFICATION_OPTIONS
+        else:
+            state["clarification_options"] = CLARIFICATION_OPTIONS
     else:
         state["needs_clarification"] = False
         state["clarification_options"] = []

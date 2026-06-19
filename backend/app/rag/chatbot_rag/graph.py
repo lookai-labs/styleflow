@@ -50,6 +50,7 @@ from backend.app.rag.chatbot_rag.nodes import (
 from backend.app.rag.chatbot_rag.intents import (
     CATEGORY_HAIR,
     CATEGORY_MAKEUP,
+    INTENT_CATEGORY_CONFLICT,
     INTENT_FOLLOWUP_RECOMMENDATION,
     INTENT_MEMORY_RECALL,
     INTENT_MOOD_CHOICE,
@@ -161,6 +162,10 @@ def route_after_intent(state: ChatbotState) -> str:
     # 대화 기억 질문 — 최우선
     if intent == INTENT_MEMORY_RECALL:
         return "answer_memory_recall"
+
+    # 카테고리 충돌 — answer 이미 설정, 메모리만 업데이트
+    if intent == INTENT_CATEGORY_CONFLICT:
+        return "update_memory"
 
     if intent == INTENT_RETOUCH:
         return "analyze_retouch_request"
@@ -366,6 +371,7 @@ def build_chatbot_graph():
         route_after_intent,
         {
             "answer_memory_recall": "answer_memory_recall",
+            "update_memory": "update_memory",
             "analyze_retouch_request": "analyze_retouch_request",
             "answer_followup_recommendation": "answer_followup_recommendation",
             "ask_clarification": "ask_clarification",

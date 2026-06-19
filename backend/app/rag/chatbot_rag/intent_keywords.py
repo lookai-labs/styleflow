@@ -21,6 +21,7 @@ from backend.app.rag.chatbot_rag.intents import (
     INTENT_STYLING_METHOD,
     INTENT_UNCLEAR,
 )
+
 from backend.app.rag.chatbot_rag.noise_filter import is_noise
 
 # ---------------------------------------------------------------------------
@@ -634,6 +635,80 @@ RETOUCH_IMAGE_NOUNS = [
     "눈",
     "피부톤",
 ]
+
+
+# ---------------------------------------------------------------------------
+# 자연어 리터치 감지 — 부위 키워드 + 변화 표현 조합
+# ---------------------------------------------------------------------------
+
+MAKEUP_PART_KEYWORDS = [
+    "입술", "립", "아이라인", "눈매", "눈썹",
+    "볼", "치크", "블러셔", "피부톤",
+    "섀도우", "쉐도우", "아이섀도우",
+    "하이라이터", "쉐이딩", "컨투어링",
+]
+
+HAIR_PART_KEYWORDS = [
+    "앞머리", "옆머리", "뒷머리",
+    "컬", "웨이브", "볼륨",
+    "기장", "두상", "정수리", "뿌리",
+]
+
+CHANGE_KEYWORDS = [
+    "만들고 싶어", "만들어 줘", "만들어줘",
+    "하고 싶어", "해줘", "해 줘",
+    "변경하고 싶어", "변경해줘", "변경해 줘",
+    "내리고 싶어", "올리고 싶어",
+    "길게 하고 싶어", "짧게 하고 싶어",
+    "진하게", "연하게", "밝게", "어둡게",
+    "자연스럽게", "강하게", "부드럽게",
+    "빨갛게", "핑크색으로", "갈색으로", "검은색으로",
+    "더 자연스럽게", "더 진하게", "더 연하게",
+]
+
+# 충돌 감지용 부위 키워드 (반대 카테고리 명시 부위)
+_MAKEUP_CONFLICT_PARTS = [
+    "입술", "립", "아이라인", "눈매", "눈썹",
+    "볼", "치크", "블러셔",
+    "섀도우", "쉐도우", "아이섀도우",
+    "하이라이터", "쉐이딩", "컨투어링",
+    "피부톤",
+]
+
+_HAIR_CONFLICT_PARTS = [
+    "앞머리", "옆머리", "뒷머리",
+    "컬", "웨이브",
+    "두상", "정수리", "뿌리",
+]
+
+
+def detect_natural_retouch_target(message: str) -> str | None:
+    """
+    (뷰티 부위 키워드) + (변화 표현) 조합이면 자연어 리터치 요청으로 판별한다.
+    반환: CATEGORY_MAKEUP | CATEGORY_HAIR | None
+    """
+    msg = message.strip().lower()
+    if not any(kw in msg for kw in CHANGE_KEYWORDS):
+        return None
+    if any(kw in msg for kw in MAKEUP_PART_KEYWORDS):
+        return CATEGORY_MAKEUP
+    if any(kw in msg for kw in HAIR_PART_KEYWORDS):
+        return CATEGORY_HAIR
+    return None
+
+
+def detect_category_conflict(message: str, target_type: str | None) -> bool:
+    """
+    target_type이 고정된 채팅방에서 반대 카테고리 신체 부위가 언급되면 True.
+    """
+    if not target_type:
+        return False
+    msg = message.strip().lower()
+    if target_type == CATEGORY_HAIR:
+        return any(kw in msg for kw in _MAKEUP_CONFLICT_PARTS)
+    if target_type == CATEGORY_MAKEUP:
+        return any(kw in msg for kw in _HAIR_CONFLICT_PARTS)
+    return False
 
 
 _MEMORY_RECALL_PHRASES = [
