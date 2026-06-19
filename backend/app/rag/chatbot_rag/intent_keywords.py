@@ -16,6 +16,7 @@ from backend.app.rag.chatbot_rag.intents import (
     INTENT_OUTFIT_FIT_CHECK,
     INTENT_OUTFIT_RECOMMENDATION,
     INTENT_OUTFIT_SYNTHESIS,
+    INTENT_RECOMMENDATION_RECALL,
     INTENT_SMALLTALK,
     INTENT_STYLE_RETOUCH,
     INTENT_STYLE_EXPLANATION,
@@ -494,6 +495,11 @@ OUTFIT_SYNTHESIS_PHRASES = [
     "룩으로 바꿔", "룩으로 합성", "룩 입혀",
     "옷 바꿔", "의상 바꿔", "옷을 바꿔", "의상을 바꿔",
     "옷 변경", "의상 변경",
+    # 욕구형 (outfit 명사 + 바꾸고 싶어)
+    "옷 바꾸고 싶어", "의상 바꾸고 싶어",
+    "옷을 바꾸고 싶어", "의상을 바꾸고 싶어",
+    "옷 바꾸고 싶", "의상 바꾸고 싶",
+    "옷을 바꾸고 싶", "의상을 바꾸고 싶",
 ]
 
 # 합성은 원하지만 구체적 방향이 없는 모호한 표현
@@ -504,6 +510,23 @@ OUTFIT_SYNTHESIS_AMBIGUOUS_PHRASES = [
     "예쁘게 입혀줘",
     "입혀줘",
     "바꿔줘",
+    "옷 바꾸고 싶어",
+    "의상 바꾸고 싶어",
+    "옷을 바꾸고 싶어",
+    "의상을 바꾸고 싶어",
+]
+
+# retouch가 아니라 outfit으로 처리해야 하는 키워드 (명사)
+OUTFIT_GUARD_KEYWORDS = [
+    "옷", "의상", "코디", "착장",
+    "정장", "원피스", "셔츠", "블라우스", "슬랙스",
+    "자켓", "니트", "신발",
+]
+
+# pending 취소 표현
+PENDING_CANCEL_WORDS = [
+    "취소", "취소하기", "그만", "아니", "안 할래", "다른 거 물어볼래",
+    "안 할게", "됐어", "됐어요",
 ]
 
 # ---------------------------------------------------------------------------
@@ -887,8 +910,12 @@ def is_retouch_request(message: str) -> bool:
     """
     GAN 합성 이미지에 대한 직접 편집/수정 요청인지 판별한다.
     classify_intent 노드에서 sim_image_url 존재 여부와 함께 확인한다.
+    의상/옷/코디 등 outfit 키워드가 있으면 retouch가 아니라 outfit으로 처리한다.
     """
     msg = message.strip().lower()
+    # outfit 키워드가 있으면 retouch로 잡지 않는다
+    if any(kw in msg for kw in OUTFIT_GUARD_KEYWORDS):
+        return False
     if any(kw in msg for kw in RETOUCH_EXPLICIT_KEYWORDS):
         return True
     if any(phrase in msg for phrase in RETOUCH_STYLE_TARGET_PHRASES):
@@ -896,6 +923,60 @@ def is_retouch_request(message: str) -> bool:
     has_verb = any(v in msg for v in RETOUCH_EDIT_VERBS)
     has_noun = any(n in msg for n in RETOUCH_IMAGE_NOUNS)
     return has_verb and has_noun
+
+
+def is_beauty_retouch_request(message: str) -> bool:
+    """
+    헤어/메이크업 뷰티 부위가 명시된 retouch 요청인지 판별한다.
+    outfit clarification pending 탈출 여부 판단에 사용한다.
+    """
+    msg = message.strip().lower()
+    beauty_nouns = [
+        "헤어", "머리", "앞머리", "가르마", "컬", "볼륨", "기장",
+        "메이크업", "화장", "립", "입술", "눈", "눈썹", "아이라인",
+        "치크", "피부", "피부톤", "베이스",
+    ]
+    change_phrases = [
+        "수정", "바꿔", "바꾸고 싶", "변경", "고쳐", "보정",
+        "진하게", "연하게", "자연스럽게", "해줘",
+    ]
+    has_beauty = any(kw in msg for kw in beauty_nouns)
+    has_change = any(ph in msg for ph in change_phrases)
+    return has_beauty and has_change
+
+
+def detect_pending_escape_intent(user_message: str) -> str | None:
+    """
+    retouch/outfit clarification pending 상태에서 사용자가 다른 명확한 요청을 했는지 확인한다.
+    반환: intent 상수 문자열, "cancel", 또는 None (pending 유지)
+    """
+    msg = user_message.strip().lower()
+
+    # 취소 표현
+    if any(w in msg for w in PENDING_CANCEL_WORDS):
+        return "cancel"
+
+    # outfit_advice — 추천/알려줘 + outfit 명사 조합
+    if is_outfit_advice_request(msg):
+        return INTENT_OUTFIT_ADVICE
+
+    # outfit_synthesis — 합성/바꿔줘 + outfit 명사 조합
+    if is_outfit_synthesis_request(msg):
+        return INTENT_OUTFIT_SYNTHESIS
+
+    # recommendation_recall
+    if is_recommendation_recall(msg):
+        return INTENT_RECOMMENDATION_RECALL
+
+    # memory_recall
+    if is_memory_recall(msg):
+        return INTENT_MEMORY_RECALL
+
+    # followup recommendation
+    if is_followup_recommendation(msg):
+        return INTENT_FOLLOWUP_RECOMMENDATION
+
+    return None
 
 
 _GREETING_STRIP_CHARS = "!?~ㅎㅋ\t\n "

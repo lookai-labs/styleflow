@@ -11,8 +11,10 @@ from backend.app.rag.chatbot_rag.intent_keywords import (
     detect_category_conflict,
     detect_natural_retouch_target,
     detect_outfit_occasion,
+    detect_pending_escape_intent,
     detect_question_category,
     infer_category_from_chat_history,
+    is_beauty_retouch_request,
     is_outfit_advice_request,
     is_outfit_clarification_needed,
     is_outfit_synthesis_request,
@@ -20,6 +22,7 @@ from backend.app.rag.chatbot_rag.intent_keywords import (
     is_memory_recall,
     is_recommendation_recall,
     is_retouch_request,
+    OUTFIT_GUARD_KEYWORDS,
 )
 from backend.app.rag.chatbot_rag.intents import (
     CATEGORY_HAIR,
@@ -49,6 +52,7 @@ from backend.app.rag.chatbot_rag.intents import (
     PENDING_OUTFIT_OPTION_SELECTION,
     PENDING_OUTFIT_SYNTHESIS_CONFIRMATION,
     PENDING_OUTFIT_USER_IMAGE_REQUIRED,
+    PENDING_RETOUCH_CLARIFICATION,
     PENDING_SELECTION_MOOD,
 )
 from backend.app.rag.chatbot_rag.memory import (
@@ -915,8 +919,8 @@ def update_memory(state: ChatbotState) -> ChatbotState:
 
 def resolve_pending_selection(state: ChatbotState) -> ChatbotState:
     """
-    user_profile에 저장된 pending_selection과 outfit 관련 필드를
-    state로 복원한다.
+    user_profile에 저장된 pending_selection과 outfit 관련 필드를 state로 복원한다.
+    clarification pending 상태에서 사용자가 다른 명확한 요청을 하면 pending을 해제한다.
     """
     user_profile = state.get("user_profile") or {}
 
@@ -970,6 +974,45 @@ def resolve_pending_selection(state: ChatbotState) -> ChatbotState:
         v = user_profile.get("latest_generated_image_url")
         if v:
             state["latest_generated_image_url"] = v
+
+    # ── clarification pending 탈출 검사 ────────────────────────────────────────
+    # confirmation pending은 버튼 입력 중심으로 처리하므로 자연어 탈출 허용 안 함.
+    # clarification pending일 때만 사용자 발화에서 다른 intent를 감지하면 해제한다.
+    pending = state.get("pending_selection")
+    user_message = state.get("user_message", "")
+
+    if pending == PENDING_RETOUCH_CLARIFICATION:
+        escape = detect_pending_escape_intent(user_message)
+        if escape == "cancel":
+            state["pending_selection"] = None
+            state["pending_retouch"] = None
+            state["intent"] = INTENT_CATEGORY_CONFLICT  # → _route_by_pending이 update_memory로 직행
+            state["answer"] = "요청을 취소했습니다. 다른 요청이 있으시면 말씀해 주세요."
+        elif escape is not None:
+            # 다른 intent: pending 해제 후 classify_intent가 올바르게 분류
+            state["pending_selection"] = None
+            state["pending_retouch"] = None
+
+    elif pending == PENDING_OUTFIT_CLARIFICATION:
+        # outfit clarification 답변(상황/방향 명시) vs 탈출 intent 구분
+        # 뷰티 리터치 요청이면 outfit pending 해제
+        if is_beauty_retouch_request(user_message):
+            state["pending_selection"] = None
+            state["outfit_synthesis_source_image"] = None
+            state["outfit_synthesis_payload"] = None
+        else:
+            # 취소 표현
+            escape = detect_pending_escape_intent(user_message)
+            if escape == "cancel":
+                state["pending_selection"] = None
+                state["outfit_synthesis_source_image"] = None
+                state["outfit_synthesis_payload"] = None
+                state["intent"] = INTENT_CATEGORY_CONFLICT
+                state["answer"] = "요청을 취소했습니다. 다른 요청이 있으시면 말씀해 주세요."
+            elif escape in {INTENT_RECOMMENDATION_RECALL, INTENT_MEMORY_RECALL, INTENT_FOLLOWUP_RECOMMENDATION}:
+                state["pending_selection"] = None
+                state["outfit_synthesis_source_image"] = None
+                state["outfit_synthesis_payload"] = None
 
     return state
 
@@ -1738,6 +1781,34 @@ def _build_beauty_style_for_outfit(state: ChatbotState) -> dict:
     }
 
 
+def normalize_outfit_request_label(user_message: str, occasion: str | None) -> str:
+    """
+    사용자 원문에서 동사/조사를 제거하고 의상 방향만 반환한다.
+    "캐주얼 데일리 룩으로 합성해줘" → "캐주얼 데일리 룩"
+    """
+    # occasion이 명확하면 한국어 레이블 사용
+    if occasion and occasion in OCCASION_LABELS:
+        return OCCASION_LABELS[occasion]
+    # 원문에서 동사/조사 제거
+    msg = user_message.strip()
+    _STRIP_SUFFIXES = [
+        "으로 합성해줘", "로 합성해줘", "으로 합성해 줘", "로 합성해 줘",
+        "으로 바꿔줘", "로 바꿔줘", "으로 바꿔 줘", "로 바꿔 줘",
+        "으로 입혀줘", "로 입혀줘", "으로 입혀 줘", "로 입혀 줘",
+        "으로 합성해주세요", "로 합성해주세요",
+        "으로 바꿔주세요", "로 바꿔주세요",
+        "으로 입혀주세요", "로 입혀주세요",
+        " 합성해줘", " 합성해 줘", " 입혀줘", " 입혀 줘",
+        " 바꿔줘", " 바꿔 줘", " 변경해줘", " 변경해 줘",
+        "으로", "로",
+    ]
+    for suffix in _STRIP_SUFFIXES:
+        if msg.endswith(suffix):
+            msg = msg[: -len(suffix)].strip()
+            break
+    return msg or user_message.strip()
+
+
 _OUTFIT_ADVICE_CONSTRAINTS = [
     "추천은 실제 착용 가능한 의상 중심으로 한다.",
     "헤어와 메이크업 분위기를 해치지 않는다.",
@@ -1760,7 +1831,19 @@ def generate_outfit_advice(state: ChatbotState) -> ChatbotState:
     """
     outfit_advice intent — RAG 없이 LLM으로 텍스트 의상 추천을 생성한다.
     이미지가 없어도 분석 정보 기반으로 추천 가능하다.
+    의상 기능은 최종결과 AI 상담(target_type=None)에서만 동작한다.
     """
+    # 단일 카테고리 채팅(헤어 또는 메이크업 전용)에서는 의상 기능을 제공하지 않는다
+    target_type = _normalize_target_type(state.get("target_type"))
+    if target_type in {CATEGORY_HAIR, CATEGORY_MAKEUP}:
+        state["intent"] = INTENT_OUTFIT_ADVICE
+        state["answer"] = (
+            "의상 추천은 헤어와 메이크업 시뮬레이션이 모두 완료된 후 "
+            "'AI 상담하기'에서 이용할 수 있어요."
+        )
+        _no_rag_result(state, "outfit_advice_single_category_blocked")
+        return state
+
     user_message = state.get("user_message", "")
     occasion = detect_outfit_occasion(user_message) or state.get("outfit_occasion")
     resolved_image = resolve_latest_generated_image(state)
@@ -1808,7 +1891,19 @@ def analyze_outfit_synthesis_request(state: ChatbotState) -> ChatbotState:
     이미지 없음 → 안내 후 종료.
     명확 요청 → 합성 확인 버튼 제시.
     불명확 요청 → 방향 재질문.
+    의상 기능은 최종결과 AI 상담(target_type=None)에서만 동작한다.
     """
+    # 단일 카테고리 채팅에서는 의상 기능을 제공하지 않는다
+    target_type = _normalize_target_type(state.get("target_type"))
+    if target_type in {CATEGORY_HAIR, CATEGORY_MAKEUP}:
+        state["intent"] = INTENT_OUTFIT_SYNTHESIS
+        state["answer"] = (
+            "의상 합성은 헤어와 메이크업 시뮬레이션이 모두 완료된 후 "
+            "'AI 상담하기'에서 이용할 수 있어요."
+        )
+        _no_rag_result(state, "outfit_synthesis_single_category_blocked")
+        return state
+
     user_message = state.get("user_message", "")
     resolved_image = resolve_latest_generated_image(state)
 
@@ -1843,7 +1938,7 @@ def analyze_outfit_synthesis_request(state: ChatbotState) -> ChatbotState:
 
     # 명확한 요청 → 확인 단계
     occasion_label = OCCASION_LABELS.get(occasion or "", occasion or "상황 정보 없음")
-    normalized_request = user_message.strip()
+    normalized_request = normalize_outfit_request_label(user_message, occasion)
 
     state["outfit_occasion"] = occasion
     state["outfit_synthesis_source_image"] = resolved_image
@@ -1909,8 +2004,8 @@ def handle_outfit_clarification(state: ChatbotState) -> ChatbotState:
         return state
 
     occasion = detect_outfit_occasion(user_message) or state.get("outfit_occasion")
-    occasion_label = OCCASION_LABELS.get(occasion or "", user_message[:20] or "상황 정보 없음")
-    normalized_request = user_message.strip()
+    occasion_label = OCCASION_LABELS.get(occasion or "", occasion or "상황 정보 없음")
+    normalized_request = normalize_outfit_request_label(user_message, occasion)
 
     state["outfit_occasion"] = occasion
     state["outfit_synthesis_source_image"] = resolved_image

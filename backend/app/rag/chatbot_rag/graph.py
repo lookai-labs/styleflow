@@ -95,6 +95,12 @@ def route_after_analysis(state: ChatbotState) -> str:
 
 def _route_by_pending(state: ChatbotState) -> str:
     """pending_selection 값에 따라 적절한 핸들러로 분기한다."""
+    # resolve_pending_selection에서 cancel 처리가 완료된 경우 바로 종료
+    if state.get("intent") == INTENT_CATEGORY_CONFLICT and state.get("answer"):
+        pending = state.get("pending_selection")
+        if not pending:
+            return "update_memory"
+
     pending = state.get("pending_selection")
     selected_option = state.get("selected_option")
 
@@ -344,6 +350,7 @@ def build_chatbot_graph():
             "handle_outfit_clarification": "handle_outfit_clarification",
             "handle_outfit_confirmation": "handle_outfit_confirmation",
             "classify_image_intent": "classify_image_intent",
+            "update_memory": "update_memory",
         },
     )
 
