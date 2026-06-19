@@ -63,6 +63,19 @@ const FALLBACK_TEXTS = [
 ];
 let fallbackCursor = 0;
 
+/* ── 타이핑 인디케이터 ── */
+function TypingIndicator() {
+  return (
+    <div className="max-w-[75%] p-4 rounded-lg bg-gray-100">
+      <div className="flex gap-1.5 items-center h-5">
+        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
+        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
+        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
+      </div>
+    </div>
+  );
+}
+
 /* ── 말풍선 컴포넌트 ── */
 function Bubble({
   msg,
@@ -129,6 +142,7 @@ export default function AIStylistPage() {
   const [consultData, setConsultData] = useState<ConsultData | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
   const [latestAiImage, setLatestAiImage] = useState<string | null>(null);
   const [chatHistory, setChatHistory] = useState<{ role: string; content: string }[]>([]);
   const [userProfile, setUserProfile] = useState<Record<string, unknown>>({});
@@ -194,6 +208,14 @@ export default function AIStylistPage() {
     }
   }, [messages]);
 
+  useEffect(() => {
+    if (!isTyping) return;
+    const container = messagesContainerRef.current;
+    if (container) {
+      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+    }
+  }, [isTyping]);
+
   /* ── 백엔드 호출 공통 함수 ── */
   const callChatApi = async (
     message: string,
@@ -252,6 +274,7 @@ export default function AIStylistPage() {
     }).catch((e) => console.error("[AI Stylist] feedback 저장 실패:", e?.response?.data ?? e));
 
     setTimeout(() => {
+      setIsTyping(false);
       const hasSelection = !!data.selection?.options?.length;
       setMessages((prev) => [
         ...prev,
@@ -267,9 +290,10 @@ export default function AIStylistPage() {
 
   /* ── 메시지 전송 ── */
   const handleSend = async (content: string) => {
-    if (!content.trim()) return;
+    if (!content.trim() || isTyping) return;
     setMessages((prev) => [...prev, { role: "user", content }]);
     setInputValue("");
+    setIsTyping(true);
 
     try {
       const data = await callChatApi(content);
@@ -279,6 +303,7 @@ export default function AIStylistPage() {
       const fallback = FALLBACK_TEXTS[fallbackCursor % FALLBACK_TEXTS.length];
       fallbackCursor++;
       setTimeout(() => {
+        setIsTyping(false);
         setMessages((prev) => [...prev, { role: "assistant", content: fallback }]);
       }, 800);
     }
@@ -286,7 +311,9 @@ export default function AIStylistPage() {
 
   /* ── 선택 버튼 클릭 처리 ── */
   const handleSelectOption = async (selection: Selection, option: SelectionOption) => {
+    if (isTyping) return;
     setMessages((prev) => [...prev, { role: "user", content: option.label }]);
+    setIsTyping(true);
 
     try {
       const data = await callChatApi(option.label, {
@@ -298,6 +325,7 @@ export default function AIStylistPage() {
       const fallback = FALLBACK_TEXTS[fallbackCursor % FALLBACK_TEXTS.length];
       fallbackCursor++;
       setTimeout(() => {
+        setIsTyping(false);
         setMessages((prev) => [...prev, { role: "assistant", content: fallback }]);
       }, 800);
     }
@@ -416,6 +444,11 @@ export default function AIStylistPage() {
                     <Bubble msg={msg} onSelectOption={handleSelectOption} onApplyRetouched={handleApplyRetouched} />
                   </div>
                 ))}
+                {isTyping && (
+                  <div className="flex justify-start">
+                    <TypingIndicator />
+                  </div>
+                )}
               </div>
 
               <div className="border-t border-gray-200 p-6 flex-shrink-0">
@@ -431,10 +464,12 @@ export default function AIStylistPage() {
                     }}
                     placeholder="원하는 스타일 변경을 입력하세요..."
                     className="flex-1"
+                    disabled={isTyping}
                   />
                   <Button
                     onClick={() => handleSend(inputValue)}
                     className="bg-black text-white hover:bg-gray-800"
+                    disabled={isTyping}
                   >
                     <Send className="w-4 h-4" />
                   </Button>
