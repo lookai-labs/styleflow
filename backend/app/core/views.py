@@ -435,6 +435,14 @@ def ai_chat(request):
     selected_option = request.data.get('selected_option') or None
     previous_recommendations = request.data.get('previous_recommendations') or _CHATBOT_DUMMY_RECOMMENDATIONS
 
+    raw_target_type = request.data.get('target_type') or None
+    target_type = raw_target_type if raw_target_type in {'hair', 'makeup'} else None
+    applied_style_key = request.data.get('applied_style_key') or None
+    logger.info(
+        "[ai_chat] user_id=%s message=%r target_type=%s applied_style_key=%s",
+        request.user.id, message, target_type, applied_style_key,
+    )
+
     try:
         from backend.app.rag.chatbot_rag.graph import run_chatbot
         result = run_chatbot(
@@ -449,6 +457,8 @@ def ai_chat(request):
             user_profile=user_profile,
             selected_option=selected_option,
             sim_image_url=sim_image_url,
+            target_type=target_type,
+            applied_style_key=applied_style_key,
         )
     except Exception as e:
         logger.error("챗봇 답변 생성 실패: user_id=%s, error=%s", request.user.id, e, exc_info=True)
@@ -458,6 +468,10 @@ def ai_chat(request):
     if retouched_image_url and retouched_image_url.startswith('/'):
         retouched_image_url = request.build_absolute_uri(retouched_image_url)
 
+    outfit_result_image_url = result.get('outfit_result_image_url')
+    if outfit_result_image_url and outfit_result_image_url.startswith('/'):
+        outfit_result_image_url = request.build_absolute_uri(outfit_result_image_url)
+
     return Response({
         'reply': result.get('answer', ''),
         'updated_chat_history': result.get('updated_chat_history', []),
@@ -465,6 +479,8 @@ def ai_chat(request):
         'selection': result.get('selection'),
         'pending_selection': result.get('pending_selection'),
         'retouched_image_url': retouched_image_url,
+        'outfit_result_image_url': outfit_result_image_url,
+        'category': result.get('category'),
     })
 
 

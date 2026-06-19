@@ -24,6 +24,7 @@ from backend.app.rag.chatbot_rag.retouch_nodes import (
 )
 from backend.app.rag.chatbot_rag.nodes import (
     analyze_outfit_image,
+    analyze_outfit_synthesis_request,
     answer_followup_recommendation,
     answer_memory_recall,
     ask_clarification,
@@ -36,29 +37,40 @@ from backend.app.rag.chatbot_rag.nodes import (
     classify_intent,
     generate_answer_node,
     generate_non_rag_answer,
+    generate_outfit_advice,
     generate_outfit_answer,
     handle_mood_pending,
+    handle_outfit_clarification,
+    handle_outfit_confirmation,
     handle_outfit_context_pending,
     handle_outfit_option_pending,
     handle_outfit_user_image_pending,
+    handle_recommendation_recall,
     handle_synthesis_confirmation,
     resolve_pending_selection,
     retrieve_context,
+    run_new_outfit_synthesis,
     run_outfit_synthesis,
     update_memory,
 )
 from backend.app.rag.chatbot_rag.intents import (
     CATEGORY_HAIR,
     CATEGORY_MAKEUP,
+    INTENT_CATEGORY_CONFLICT,
     INTENT_FOLLOWUP_RECOMMENDATION,
     INTENT_MEMORY_RECALL,
     INTENT_MOOD_CHOICE,
     INTENT_MOOD_SELECTION,
+    INTENT_OUTFIT_ADVICE,
     INTENT_OUTFIT_FIT_CHECK,
     INTENT_OUTFIT_RECOMMENDATION,
+    INTENT_OUTFIT_SYNTHESIS,
+    INTENT_RECOMMENDATION_RECALL,
     INTENT_RETOUCH,
     INTENT_STYLE_EXPLANATION,
     OUTFIT_INTENTS,
+    PENDING_OUTFIT_CLARIFICATION,
+    PENDING_OUTFIT_CONFIRMATION,
     PENDING_OUTFIT_CONTEXT,
     PENDING_OUTFIT_OPTION_SELECTION,
     PENDING_OUTFIT_SYNTHESIS_CONFIRMATION,
@@ -83,6 +95,12 @@ def route_after_analysis(state: ChatbotState) -> str:
 
 def _route_by_pending(state: ChatbotState) -> str:
     """pending_selection 값에 따라 적절한 핸들러로 분기한다."""
+    # resolve_pending_selection에서 cancel 처리가 완료된 경우 바로 종료
+    if state.get("intent") == INTENT_CATEGORY_CONFLICT and state.get("answer"):
+        pending = state.get("pending_selection")
+        if not pending:
+            return "update_memory"
+
     pending = state.get("pending_selection")
     selected_option = state.get("selected_option")
 
@@ -102,6 +120,10 @@ def _route_by_pending(state: ChatbotState) -> str:
         return "handle_retouch_confirmation"
     if pending == PENDING_RETOUCH_IMAGE_REQUIRED:
         return "handle_retouch_image_required"
+    if pending == PENDING_OUTFIT_CLARIFICATION:
+        return "handle_outfit_clarification"
+    if pending == PENDING_OUTFIT_CONFIRMATION:
+        return "handle_outfit_confirmation"
 
     return "classify_image_intent"
 
@@ -162,6 +184,14 @@ def route_after_intent(state: ChatbotState) -> str:
     if intent == INTENT_MEMORY_RECALL:
         return "answer_memory_recall"
 
+    # 카테고리 충돌 — answer 이미 설정, 메모리만 업데이트
+    if intent == INTENT_CATEGORY_CONFLICT:
+        return "update_memory"
+
+    # 추천 회상 질문 — category 필터링 후 상태 기반 응답
+    if intent == INTENT_RECOMMENDATION_RECALL:
+        return "handle_recommendation_recall"
+
     if intent == INTENT_RETOUCH:
         return "analyze_retouch_request"
 
@@ -180,6 +210,12 @@ def route_after_intent(state: ChatbotState) -> str:
 
     if intent == INTENT_MOOD_SELECTION:
         return "ask_mood_selection"
+
+    if intent == INTENT_OUTFIT_ADVICE:
+        return "generate_outfit_advice"
+
+    if intent == INTENT_OUTFIT_SYNTHESIS:
+        return "analyze_outfit_synthesis_request"
 
     if intent in OUTFIT_INTENTS:
         if intent == INTENT_OUTFIT_RECOMMENDATION and not state.get("outfit_context"):
@@ -221,6 +257,12 @@ def _route_after_user_image_pending(state: ChatbotState) -> str:
     return "update_memory"
 
 
+def _route_after_outfit_confirmation(state: ChatbotState) -> str:
+    if state.get("outfit_synthesis_action") == "confirm":
+        return "run_new_outfit_synthesis"
+    return "update_memory"
+
+
 # ---------------------------------------------------------------------------
 # Graph 빌더
 # ---------------------------------------------------------------------------
@@ -258,9 +300,17 @@ def build_chatbot_graph():
     graph.add_node("handle_outfit_user_image_pending", handle_outfit_user_image_pending)
     graph.add_node("run_outfit_synthesis", run_outfit_synthesis)
 
-    # 대화 기억 / 후속 추천 노드
+    # outfit_advice / outfit_synthesis 신규 노드
+    graph.add_node("generate_outfit_advice", generate_outfit_advice)
+    graph.add_node("analyze_outfit_synthesis_request", analyze_outfit_synthesis_request)
+    graph.add_node("handle_outfit_clarification", handle_outfit_clarification)
+    graph.add_node("handle_outfit_confirmation", handle_outfit_confirmation)
+    graph.add_node("run_new_outfit_synthesis", run_new_outfit_synthesis)
+
+    # 대화 기억 / 후속 추천 / 추천 회상 노드
     graph.add_node("answer_memory_recall", answer_memory_recall)
     graph.add_node("answer_followup_recommendation", answer_followup_recommendation)
+    graph.add_node("handle_recommendation_recall", handle_recommendation_recall)
 
     # 리터칭 노드
     graph.add_node("analyze_retouch_request", analyze_retouch_request)
@@ -297,7 +347,10 @@ def build_chatbot_graph():
             "handle_retouch_clarification": "handle_retouch_clarification",
             "handle_retouch_confirmation": "handle_retouch_confirmation",
             "handle_retouch_image_required": "handle_retouch_image_required",
+            "handle_outfit_clarification": "handle_outfit_clarification",
+            "handle_outfit_confirmation": "handle_outfit_confirmation",
             "classify_image_intent": "classify_image_intent",
+            "update_memory": "update_memory",
         },
     )
 
@@ -366,12 +419,16 @@ def build_chatbot_graph():
         route_after_intent,
         {
             "answer_memory_recall": "answer_memory_recall",
+            "update_memory": "update_memory",
+            "handle_recommendation_recall": "handle_recommendation_recall",
             "analyze_retouch_request": "analyze_retouch_request",
             "answer_followup_recommendation": "answer_followup_recommendation",
             "ask_clarification": "ask_clarification",
             "ask_mood_selection": "ask_mood_selection",
             "ask_outfit_context_selection": "ask_outfit_context_selection",
             "check_hair_makeup_ready": "check_hair_makeup_ready",
+            "generate_outfit_advice": "generate_outfit_advice",
+            "analyze_outfit_synthesis_request": "analyze_outfit_synthesis_request",
             "generate_non_rag_answer": "generate_non_rag_answer",
             "retrieve_context": "retrieve_context",
         },
@@ -428,9 +485,20 @@ def build_chatbot_graph():
 
     graph.add_edge("analyze_outfit_image", "generate_outfit_answer")
 
+    # outfit_confirmation 분기
+    graph.add_conditional_edges(
+        "handle_outfit_confirmation",
+        _route_after_outfit_confirmation,
+        {
+            "run_new_outfit_synthesis": "run_new_outfit_synthesis",
+            "update_memory": "update_memory",
+        },
+    )
+
     # update_memory로 수렴하는 엣지들
     graph.add_edge("answer_memory_recall", "update_memory")
     graph.add_edge("answer_followup_recommendation", "update_memory")
+    graph.add_edge("handle_recommendation_recall", "update_memory")
     graph.add_edge("ask_retouch_clarification", "update_memory")
     graph.add_edge("ask_retouch_confirmation", "update_memory")
     graph.add_edge("ask_retouch_image_required", "update_memory")
@@ -443,6 +511,10 @@ def build_chatbot_graph():
     graph.add_edge("generate_non_rag_answer", "update_memory")
     graph.add_edge("generate_outfit_answer", "update_memory")
     graph.add_edge("run_outfit_synthesis", "update_memory")
+    graph.add_edge("generate_outfit_advice", "update_memory")
+    graph.add_edge("analyze_outfit_synthesis_request", "update_memory")
+    graph.add_edge("handle_outfit_clarification", "update_memory")
+    graph.add_edge("run_new_outfit_synthesis", "update_memory")
     graph.add_edge("retrieve_context", "generate_answer")
     graph.add_edge("generate_answer", "update_memory")
     graph.add_edge("update_memory", END)
@@ -497,6 +569,9 @@ def run_chatbot(
         "chat_history": chat_history or [],
     }
 
+    if normalized_target_type in {CATEGORY_HAIR, CATEGORY_MAKEUP}:
+        initial_state["category"] = normalized_target_type
+
     result = graph.invoke(initial_state)
 
     return {
@@ -543,4 +618,6 @@ def run_chatbot(
         "pending_retouch": result.get("pending_retouch"),
         "retouch_prompt_payload": result.get("retouch_prompt_payload"),
         "retouch_result_image_url": result.get("retouch_result_image_url"),
+        # 의상 합성 결과
+        "outfit_result_image_url": result.get("outfit_result_image_url"),
     }

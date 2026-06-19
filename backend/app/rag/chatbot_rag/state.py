@@ -108,3 +108,12 @@ class ChatbotState(TypedDict, total=False):
     pending_retouch: dict[str, Any] | None
     retouch_prompt_payload: dict[str, Any] | None
     retouch_result_image_url: str | None
+
+    # 최근 생성 이미지 URL (리터치·의상합성 결과 중 가장 최신, turn 간 user_profile로 유지)
+    latest_generated_image_url: str | None
+
+    # 의상 추천/합성 (new outfit flow — 이미지 업로드 없음)
+    outfit_occasion: str | None
+    outfit_synthesis_source_image: str | None
+    outfit_synthesis_payload: dict[str, Any] | None
+    outfit_result_image_url: str | None

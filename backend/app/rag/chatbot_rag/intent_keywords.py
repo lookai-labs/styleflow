@@ -11,9 +11,12 @@ from backend.app.rag.chatbot_rag.intents import (
     INTENT_MEMORY_RECALL,
     INTENT_MOOD_SELECTION,
     INTENT_NOISE,
+    INTENT_OUTFIT_ADVICE,
     INTENT_OUTFIT_EVENT_COORDINATION,
     INTENT_OUTFIT_FIT_CHECK,
     INTENT_OUTFIT_RECOMMENDATION,
+    INTENT_OUTFIT_SYNTHESIS,
+    INTENT_RECOMMENDATION_RECALL,
     INTENT_SMALLTALK,
     INTENT_STYLE_RETOUCH,
     INTENT_STYLE_EXPLANATION,
@@ -21,6 +24,7 @@ from backend.app.rag.chatbot_rag.intents import (
     INTENT_STYLING_METHOD,
     INTENT_UNCLEAR,
 )
+
 from backend.app.rag.chatbot_rag.noise_filter import is_noise
 
 # ---------------------------------------------------------------------------
@@ -380,7 +384,7 @@ MAKEUP_CATEGORY_KEYWORDS = [
 HAIR_CATEGORY_KEYWORDS = [
     "헤어",
     "머리",
-    "스타일",
+    "헤어스타일",
     "커트",
     "펌",
     "앞머리",
@@ -476,6 +480,120 @@ OUTFIT_FIT_CHECK_PHRASES = [
     "이 코디",
     "이 룩",
 ]
+
+# ---------------------------------------------------------------------------
+# outfit_synthesis 감지 — 이미지 합성 요청 표현
+# ---------------------------------------------------------------------------
+
+OUTFIT_SYNTHESIS_PHRASES = [
+    "합성해줘", "합성해 줘", "합성해줘요", "합성해주세요",
+    "입혀줘", "입혀 줘", "입혀줘요", "입혀주세요",
+    "의상 합성", "옷 합성",
+    "으로 합성", "로 합성",
+    "으로 입혀", "로 입혀",
+    "으로 바꿔줘", "로 바꿔줘",
+    "룩으로 바꿔", "룩으로 합성", "룩 입혀",
+    "옷 바꿔", "의상 바꿔", "옷을 바꿔", "의상을 바꿔",
+    "옷 변경", "의상 변경",
+    # 욕구형 (outfit 명사 + 바꾸고 싶어)
+    "옷 바꾸고 싶어", "의상 바꾸고 싶어",
+    "옷을 바꾸고 싶어", "의상을 바꾸고 싶어",
+    "옷 바꾸고 싶", "의상 바꾸고 싶",
+    "옷을 바꾸고 싶", "의상을 바꾸고 싶",
+]
+
+# 합성은 원하지만 구체적 방향이 없는 모호한 표현
+OUTFIT_SYNTHESIS_AMBIGUOUS_PHRASES = [
+    "옷 바꿔줘",
+    "의상 바꿔줘",
+    "잘 어울리게 입혀줘",
+    "예쁘게 입혀줘",
+    "입혀줘",
+    "바꿔줘",
+    "옷 바꾸고 싶어",
+    "의상 바꾸고 싶어",
+    "옷을 바꾸고 싶어",
+    "의상을 바꾸고 싶어",
+]
+
+# retouch가 아니라 outfit으로 처리해야 하는 키워드 (명사)
+OUTFIT_GUARD_KEYWORDS = [
+    "옷", "의상", "코디", "착장",
+    "정장", "원피스", "셔츠", "블라우스", "슬랙스",
+    "자켓", "니트", "신발",
+]
+
+# pending 취소 표현
+PENDING_CANCEL_WORDS = [
+    "취소", "취소하기", "그만", "아니", "안 할래", "다른 거 물어볼래",
+    "안 할게", "됐어", "됐어요",
+]
+
+# ---------------------------------------------------------------------------
+# occasion 키워드
+# ---------------------------------------------------------------------------
+
+OCCASION_KEYWORDS: dict[str, list[str]] = {
+    "interview": ["면접", "면접룩", "취업", "회사 면접"],
+    "wedding_guest": ["결혼식", "하객", "하객룩", "웨딩"],
+    "blind_date": ["소개팅", "첫만남", "데이트", "데이트룩"],
+    "outing": ["나들이", "피크닉", "산책", "주말"],
+    "office": ["출근", "회사", "오피스", "오피스룩"],
+    "daily": ["데일리", "일상", "캐주얼", "캐주얼룩"],
+}
+
+# outfit_advice 감지 — 텍스트 추천 요청 표현
+OUTFIT_ADVICE_PHRASES = [
+    "추천해줘", "추천해 줘", "추천해줘요", "추천해주세요",
+    "알려줘", "알려 줘", "알려줘요", "알려주세요",
+    "어울리는 옷", "어울리는 코디", "어울리는 의상",
+    "코디 추천", "룩 추천", "의상 추천", "옷 추천",
+    "어떤 옷", "어떤 코디", "뭐 입",
+]
+
+
+def detect_outfit_occasion(message: str) -> str | None:
+    """사용자 메시지에서 상황 키워드를 감지해 occasion id를 반환한다."""
+    msg = message.strip().lower()
+    for occasion_id, keywords in OCCASION_KEYWORDS.items():
+        if any(kw in msg for kw in keywords):
+            return occasion_id
+    return None
+
+
+def is_outfit_synthesis_request(message: str) -> bool:
+    """의상을 이미지에 합성/변경하는 요청인지 판별한다."""
+    msg = message.strip().lower()
+    return any(phrase in msg for phrase in OUTFIT_SYNTHESIS_PHRASES)
+
+
+def is_outfit_advice_request(message: str) -> bool:
+    """텍스트 의상 추천 요청인지 판별한다."""
+    msg = message.strip().lower()
+    if any(phrase in msg for phrase in OUTFIT_ADVICE_PHRASES):
+        return True
+    # 상황 키워드 + 의상 명사 조합
+    all_occasion_kws = [kw for kws in OCCASION_KEYWORDS.values() for kw in kws]
+    outfit_nouns = ["의상", "옷", "코디", "룩"]
+    has_occasion = any(kw in msg for kw in all_occasion_kws)
+    has_noun = any(kw in msg for kw in outfit_nouns)
+    return has_occasion and has_noun
+
+
+def is_outfit_clarification_needed(message: str) -> bool:
+    """의상 합성을 원하지만 구체적인 방향이 불명확한 요청인지 판별한다."""
+    msg = message.strip().lower()
+    # 상황 키워드나 구체적 의상 방향이 있으면 명확한 요청
+    all_occasion_kws = [kw for kws in OCCASION_KEYWORDS.values() for kw in kws]
+    specific_items = [
+        "블라우스", "슬랙스", "정장", "원피스", "청바지", "치마", "재킷",
+        "코트", "캐주얼", "포멀", "드레스", "수트",
+    ]
+    has_direction = any(kw in msg for kw in all_occasion_kws + specific_items)
+    if has_direction:
+        return False
+    # 방향 없이 합성 동사만 있으면 불명확
+    return any(phrase in msg for phrase in OUTFIT_SYNTHESIS_AMBIGUOUS_PHRASES)
 
 # ---------------------------------------------------------------------------
 # style_explanation — 선택된 스타일에 대한 설명/정의 질문 감지
@@ -636,6 +754,117 @@ RETOUCH_IMAGE_NOUNS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# 자연어 리터치 감지 — 부위 키워드 + 변화 표현 조합
+# ---------------------------------------------------------------------------
+
+MAKEUP_PART_KEYWORDS = [
+    "입술", "립", "아이라인", "눈매", "눈썹",
+    "볼", "치크", "블러셔", "피부톤",
+    "섀도우", "쉐도우", "아이섀도우",
+    "하이라이터", "쉐이딩", "컨투어링",
+]
+
+HAIR_PART_KEYWORDS = [
+    "앞머리", "옆머리", "뒷머리",
+    "컬", "웨이브", "볼륨",
+    "기장", "두상", "정수리", "뿌리",
+]
+
+CHANGE_KEYWORDS = [
+    "만들고 싶어", "만들어 줘", "만들어줘",
+    "하고 싶어", "해줘", "해 줘",
+    "변경하고 싶어", "변경해줘", "변경해 줘",
+    "내리고 싶어", "올리고 싶어",
+    "길게 하고 싶어", "짧게 하고 싶어",
+    "진하게", "연하게", "밝게", "어둡게",
+    "자연스럽게", "강하게", "부드럽게",
+    "빨갛게", "핑크색으로", "갈색으로", "검은색으로",
+    "더 자연스럽게", "더 진하게", "더 연하게",
+]
+
+# 충돌 감지용 부위 키워드 (반대 카테고리 명시 부위)
+_MAKEUP_CONFLICT_PARTS = [
+    "입술", "립", "아이라인", "눈매", "눈썹",
+    "볼", "치크", "블러셔",
+    "섀도우", "쉐도우", "아이섀도우",
+    "하이라이터", "쉐이딩", "컨투어링",
+    "피부톤",
+]
+
+_HAIR_CONFLICT_PARTS = [
+    "앞머리", "옆머리", "뒷머리",
+    "컬", "웨이브",
+    "두상", "정수리", "뿌리",
+]
+
+
+def detect_natural_retouch_target(message: str) -> str | None:
+    """
+    (뷰티 부위 키워드) + (변화 표현) 조합이면 자연어 리터치 요청으로 판별한다.
+    반환: CATEGORY_MAKEUP | CATEGORY_HAIR | None
+    """
+    msg = message.strip().lower()
+    if not any(kw in msg for kw in CHANGE_KEYWORDS):
+        return None
+    if any(kw in msg for kw in MAKEUP_PART_KEYWORDS):
+        return CATEGORY_MAKEUP
+    if any(kw in msg for kw in HAIR_PART_KEYWORDS):
+        return CATEGORY_HAIR
+    return None
+
+
+def detect_category_conflict(message: str, target_type: str | None) -> bool:
+    """
+    target_type이 고정된 채팅방에서 반대 카테고리 신체 부위가 언급되면 True.
+    """
+    if not target_type:
+        return False
+    msg = message.strip().lower()
+    if target_type == CATEGORY_HAIR:
+        return any(kw in msg for kw in _MAKEUP_CONFLICT_PARTS)
+    if target_type == CATEGORY_MAKEUP:
+        return any(kw in msg for kw in _HAIR_CONFLICT_PARTS)
+    return False
+
+
+_RECOMMENDATION_RECALL_PHRASES = [
+    # 공백 포함 기본형
+    "내가 추천받은 게 뭐야",
+    "내가 추천받은 스타일이 뭐야",
+    "나한테 추천된 게 뭐였지",
+    "나한테 추천된 게 뭐야",
+    "내 추천 결과 알려줘",
+    "추천받은 거 다시 알려줘",
+    "내가 고른 스타일이 뭐야",
+    "지금 선택한 스타일이 뭐야",
+    "방금 선택한 게 뭐야",
+    "추천받은 게 뭐야",
+    "추천된 게 뭐야",
+    "추천 결과 알려줘",
+    "추천 목록 알려줘",
+    "내 추천이 뭐야",
+    "내 추천이 뭐였지",
+    # 공백 없는 구어체 변형 (조사 붙음)
+    "내가 추천받은게 뭐야",
+    "추천받은 거 뭐였지",
+    "추천받은 스타일이 뭐야",
+    "내가 고른 게 뭐야",
+    "내가 고른게 뭐야",
+    "방금 고른 게 뭐야",
+    "방금 고른게 뭐야",
+]
+
+
+def is_recommendation_recall(message: str) -> bool:
+    msg = message.strip().lower()
+    if any(phrase in msg for phrase in _RECOMMENDATION_RECALL_PHRASES):
+        return True
+    # 한국어 조사/어미가 붙어 공백이 없는 형태도 허용 (예: "추천받은게" = "추천받은 게")
+    msg_compact = msg.replace(' ', '')
+    return any(phrase.replace(' ', '') in msg_compact for phrase in _RECOMMENDATION_RECALL_PHRASES)
+
+
 _MEMORY_RECALL_PHRASES = [
     "방금 뭐라고 했지",
     "방금 뭐라고 했어",
@@ -681,8 +910,12 @@ def is_retouch_request(message: str) -> bool:
     """
     GAN 합성 이미지에 대한 직접 편집/수정 요청인지 판별한다.
     classify_intent 노드에서 sim_image_url 존재 여부와 함께 확인한다.
+    의상/옷/코디 등 outfit 키워드가 있으면 retouch가 아니라 outfit으로 처리한다.
     """
     msg = message.strip().lower()
+    # outfit 키워드가 있으면 retouch로 잡지 않는다
+    if any(kw in msg for kw in OUTFIT_GUARD_KEYWORDS):
+        return False
     if any(kw in msg for kw in RETOUCH_EXPLICIT_KEYWORDS):
         return True
     if any(phrase in msg for phrase in RETOUCH_STYLE_TARGET_PHRASES):
@@ -690,6 +923,60 @@ def is_retouch_request(message: str) -> bool:
     has_verb = any(v in msg for v in RETOUCH_EDIT_VERBS)
     has_noun = any(n in msg for n in RETOUCH_IMAGE_NOUNS)
     return has_verb and has_noun
+
+
+def is_beauty_retouch_request(message: str) -> bool:
+    """
+    헤어/메이크업 뷰티 부위가 명시된 retouch 요청인지 판별한다.
+    outfit clarification pending 탈출 여부 판단에 사용한다.
+    """
+    msg = message.strip().lower()
+    beauty_nouns = [
+        "헤어", "머리", "앞머리", "가르마", "컬", "볼륨", "기장",
+        "메이크업", "화장", "립", "입술", "눈", "눈썹", "아이라인",
+        "치크", "피부", "피부톤", "베이스",
+    ]
+    change_phrases = [
+        "수정", "바꿔", "바꾸고 싶", "변경", "고쳐", "보정",
+        "진하게", "연하게", "자연스럽게", "해줘",
+    ]
+    has_beauty = any(kw in msg for kw in beauty_nouns)
+    has_change = any(ph in msg for ph in change_phrases)
+    return has_beauty and has_change
+
+
+def detect_pending_escape_intent(user_message: str) -> str | None:
+    """
+    retouch/outfit clarification pending 상태에서 사용자가 다른 명확한 요청을 했는지 확인한다.
+    반환: intent 상수 문자열, "cancel", 또는 None (pending 유지)
+    """
+    msg = user_message.strip().lower()
+
+    # 취소 표현
+    if any(w in msg for w in PENDING_CANCEL_WORDS):
+        return "cancel"
+
+    # outfit_advice — 추천/알려줘 + outfit 명사 조합
+    if is_outfit_advice_request(msg):
+        return INTENT_OUTFIT_ADVICE
+
+    # outfit_synthesis — 합성/바꿔줘 + outfit 명사 조합
+    if is_outfit_synthesis_request(msg):
+        return INTENT_OUTFIT_SYNTHESIS
+
+    # recommendation_recall
+    if is_recommendation_recall(msg):
+        return INTENT_RECOMMENDATION_RECALL
+
+    # memory_recall
+    if is_memory_recall(msg):
+        return INTENT_MEMORY_RECALL
+
+    # followup recommendation
+    if is_followup_recommendation(msg):
+        return INTENT_FOLLOWUP_RECOMMENDATION
+
+    return None
 
 
 _GREETING_STRIP_CHARS = "!?~ㅎㅋ\t\n "
@@ -741,11 +1028,9 @@ def _is_outfit_request(message: str) -> bool:
 
 
 def _get_outfit_intent(message: str) -> str:
-    if _has_any(message, OUTFIT_FIT_CHECK_PHRASES):
-        return INTENT_OUTFIT_FIT_CHECK
-    if _has_any(message, OUTFIT_EVENT_KEYWORDS):
-        return INTENT_OUTFIT_EVENT_COORDINATION
-    return INTENT_OUTFIT_RECOMMENDATION
+    if is_outfit_synthesis_request(message):
+        return INTENT_OUTFIT_SYNTHESIS
+    return INTENT_OUTFIT_ADVICE
 
 
 def _has_explicit_comparison(message: str) -> bool:
@@ -858,7 +1143,8 @@ def _extract_outfit_context_from_message(user_message: str) -> str | None:
     return None
 
 
-def detect_question_category(message: str) -> str:
+def detect_question_category(message: str) -> str | None:
+    """메시지에서 명시적 카테고리 키워드를 찾는다. 없으면 None을 반환한다."""
     normalized_message = message.strip().lower()
 
     if any(keyword.lower() in normalized_message for keyword in MAKEUP_CATEGORY_KEYWORDS):
@@ -867,4 +1153,30 @@ def detect_question_category(message: str) -> str:
     if any(keyword.lower() in normalized_message for keyword in HAIR_CATEGORY_KEYWORDS):
         return CATEGORY_HAIR
 
-    return CATEGORY_HAIR
+    return None
+
+
+def infer_category_from_chat_history(chat_history: list) -> str | None:
+    """
+    최근 대화 기록(새→구 순서)에서 카테고리 키워드가 처음 발견된 항목의 카테고리를 반환.
+    어시스턴트 발화 → 유저 발화 순으로 우선 검색하고, 최근 6턴만 참조한다.
+    """
+    recent = (chat_history or [])[-6:]
+
+    for turn in reversed(recent):
+        if turn.get("role") == "assistant":
+            content = turn.get("content", "")
+            if any(kw in content for kw in MAKEUP_CATEGORY_KEYWORDS):
+                return CATEGORY_MAKEUP
+            if any(kw in content for kw in HAIR_CATEGORY_KEYWORDS):
+                return CATEGORY_HAIR
+
+    for turn in reversed(recent):
+        if turn.get("role") == "user":
+            content = turn.get("content", "")
+            if any(kw in content for kw in MAKEUP_CATEGORY_KEYWORDS):
+                return CATEGORY_MAKEUP
+            if any(kw in content for kw in HAIR_CATEGORY_KEYWORDS):
+                return CATEGORY_HAIR
+
+    return None

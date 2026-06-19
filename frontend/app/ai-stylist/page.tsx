@@ -53,6 +53,8 @@ type ApiResponse = {
   selection?: Selection | null;
   pending_selection?: string | null;
   retouched_image_url?: string | null;
+  outfit_result_image_url?: string | null;
+  category?: string | null;
 };
 
 /* ── API 실패 시 폴백 텍스트 ── */
@@ -229,12 +231,23 @@ export default function AIStylistPage() {
       ...(consultData?.hairMappings ?? []).map((m) => ({
         category: "hair",
         style_name: m.style_name,
+        ...(m.style_code ? { style_code: m.style_code } : {}),
       })),
       ...(consultData?.makeupMappings ?? []).map((m) => ({
         category: "makeup",
         style_name: m.style_name,
+        ...(m.style_code ? { style_code: m.style_code } : {}),
       })),
     ];
+
+    // simulation-complete 진입(simulationResultId 존재)이면 target_type 고정 없이
+    // 백엔드 메시지 키워드 기반 자동 판별에 위임한다.
+    const isCompleteMode = !!consultData?.simulationResultId;
+    const targetType = isCompleteMode
+      ? null
+      : ((consultData?.style?.split(",")[0] ?? null) as "hair" | "makeup" | null);
+    const mappings = targetType === "hair" ? consultData?.hairMappings : consultData?.makeupMappings;
+    const appliedStyleKey = isCompleteMode ? null : (mappings?.[0]?.style_code ?? null);
 
     const res = await api.post("/ai-chat/", {
       message,
@@ -245,6 +258,8 @@ export default function AIStylistPage() {
       chat_history: chatHistory,
       user_profile: userProfile,
       sim_image_url: consultData?.selectedImage ?? null,
+      ...(targetType ? { target_type: targetType } : {}),
+      ...(appliedStyleKey ? { applied_style_key: appliedStyleKey } : {}),
       ...(selectedOption ? { selected_option: selectedOption } : {}),
     });
 
@@ -257,20 +272,26 @@ export default function AIStylistPage() {
     setUserProfile(data.updated_user_profile ?? {});
 
     const retouchedUrl = data.retouched_image_url ?? null;
-    if (retouchedUrl) {
-      setLatestAiImage(retouchedUrl);
+    const outfitResultUrl = data.outfit_result_image_url ?? null;
+    const generatedImageUrl = outfitResultUrl ?? retouchedUrl;
+    if (generatedImageUrl) {
+      setLatestAiImage(generatedImageUrl);
     }
 
-    const targetType = (consultData?.style?.split(",")[0] ?? "makeup") as "hair" | "makeup";
-    const mappings = targetType === "hair" ? consultData?.hairMappings : consultData?.makeupMappings;
-    const appliedStyleKey = mappings?.[0]?.style_code ?? null;
+    const isCompleteMode = !!consultData?.simulationResultId;
+    const feedbackTargetType = isCompleteMode
+      ? ((data.category as "hair" | "makeup" | null | undefined) ?? "makeup")
+      : ((consultData?.style?.split(",")[0] ?? "makeup") as "hair" | "makeup");
+    const feedbackMappings =
+      feedbackTargetType === "hair" ? consultData?.hairMappings : consultData?.makeupMappings;
+    const appliedStyleKey = isCompleteMode ? null : (feedbackMappings?.[0]?.style_code ?? null);
     api.post("/feedback/chat/", {
       user_chat: userMessage,
       ai_chat: data.reply,
-      target_type: targetType,
+      target_type: feedbackTargetType,
       simulation_result_id: consultData?.simulationResultId ?? null,
       applied_style_key: appliedStyleKey,
-      ...(retouchedUrl ? { img_url: retouchedUrl } : {}),
+      ...(generatedImageUrl ? { img_url: generatedImageUrl } : {}),
     }).catch((e) => console.error("[AI Stylist] feedback 저장 실패:", e?.response?.data ?? e));
 
     setTimeout(() => {
@@ -281,7 +302,7 @@ export default function AIStylistPage() {
         {
           role: "assistant",
           content: data.reply,
-          ...(retouchedUrl ? { image: retouchedUrl, retouched: true } : {}),
+          ...(generatedImageUrl ? { image: generatedImageUrl, retouched: true } : {}),
           ...(hasSelection ? { selection: data.selection! } : {}),
         },
       ]);
