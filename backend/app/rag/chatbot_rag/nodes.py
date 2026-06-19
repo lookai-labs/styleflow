@@ -10,8 +10,12 @@ from backend.app.rag.chatbot_rag.intent_keywords import (
     _extract_outfit_context_from_message,
     detect_category_conflict,
     detect_natural_retouch_target,
+    detect_outfit_occasion,
     detect_question_category,
     infer_category_from_chat_history,
+    is_outfit_advice_request,
+    is_outfit_clarification_needed,
+    is_outfit_synthesis_request,
     is_followup_recommendation,
     is_memory_recall,
     is_recommendation_recall,
@@ -29,14 +33,18 @@ from backend.app.rag.chatbot_rag.intents import (
     INTENT_MISSING_ANALYSIS,
     INTENT_MOOD_CHOICE,
     INTENT_NOISE,
+    INTENT_OUTFIT_ADVICE,
     INTENT_OUTFIT_EVENT_COORDINATION,
     INTENT_OUTFIT_FIT_CHECK,
     INTENT_OUTFIT_RECOMMENDATION,
+    INTENT_OUTFIT_SYNTHESIS,
     INTENT_RECOMMENDATION_RECALL,
     INTENT_RETOUCH,
     INTENT_SMALLTALK,
     INTENT_UNCLEAR,
     OUTFIT_INTENTS,
+    PENDING_OUTFIT_CLARIFICATION,
+    PENDING_OUTFIT_CONFIRMATION,
     PENDING_OUTFIT_CONTEXT,
     PENDING_OUTFIT_OPTION_SELECTION,
     PENDING_OUTFIT_SYNTHESIS_CONFIRMATION,
@@ -49,7 +57,13 @@ from backend.app.rag.chatbot_rag.memory import (
     merge_user_profile,
 )
 from backend.app.rag.chatbot_rag.makeup_catalog import find_makeup_style_in_message
-from backend.app.rag.chatbot_rag.outfit_prompts import build_outfit_coordination_prompt, parse_outfit_response
+from backend.app.rag.chatbot_rag.outfit_prompts import (
+    OCCASION_LABELS,
+    build_outfit_advice_prompt,
+    build_outfit_coordination_prompt,
+    build_outfit_synthesis_prompt_text,
+    parse_outfit_response,
+)
 from backend.app.rag.chatbot_rag.selection_options import (
     MOOD_OPTIONS,
     build_mood_selection_title,
@@ -64,6 +78,7 @@ from backend.app.rag.chatbot_rag.static_responses import (
     build_clarification_message,
 )
 from backend.app.rag.chatbot_rag.state import ChatbotState
+from backend.app.rag.chatbot_rag.retouch_nodes import call_gemini_image_synthesis
 from backend.app.rag.chatbot_rag.style_catalog import find_hair_style_in_message
 from backend.app.rag.rag_core.generator import (
     generate_chat_answer,
@@ -437,6 +452,28 @@ def classify_intent(state: ChatbotState) -> ChatbotState:
     if is_recommendation_recall(user_message):
         state["intent"] = INTENT_RECOMMENDATION_RECALL
         state["intent_debug"] = {"classifier": "keyword_gate", "reason": "recommendation_recall_keyword"}
+        state["category"] = category
+        state["detected_style"] = None
+        state["detected_style_is_recommended"] = False
+        state["needs_clarification"] = False
+        state["clarification_options"] = []
+        return state
+
+    # 의상 합성 요청 — retouch보다 먼저 검사 (OUTFIT_SYNTHESIS_PHRASES가 retouch 키워드와 겹칠 수 있음)
+    if is_outfit_synthesis_request(user_message):
+        state["intent"] = INTENT_OUTFIT_SYNTHESIS
+        state["intent_debug"] = {"classifier": "keyword_gate", "reason": "outfit_synthesis_keyword"}
+        state["category"] = category
+        state["detected_style"] = None
+        state["detected_style_is_recommended"] = False
+        state["needs_clarification"] = False
+        state["clarification_options"] = []
+        return state
+
+    # 의상 추천(텍스트) 요청
+    if is_outfit_advice_request(user_message):
+        state["intent"] = INTENT_OUTFIT_ADVICE
+        state["intent_debug"] = {"classifier": "keyword_gate", "reason": "outfit_advice_keyword"}
         state["category"] = category
         state["detected_style"] = None
         state["detected_style_is_recommended"] = False
@@ -844,6 +881,23 @@ def update_memory(state: ChatbotState) -> ChatbotState:
     if "pending_retouch" in state:
         new_preferences["pending_retouch"] = state.get("pending_retouch")
 
+    # 최근 생성 이미지 URL 갱신 (outfit synthesis > retouch 순서)
+    latest_img = (
+        state.get("outfit_result_image_url")
+        or state.get("retouch_result_image_url")
+        or state.get("retouched_image_url")
+    )
+    if latest_img:
+        new_preferences["latest_generated_image_url"] = latest_img
+
+    # outfit synthesis 관련 필드 보존
+    if state.get("outfit_occasion"):
+        new_preferences["outfit_occasion"] = state.get("outfit_occasion")
+    if state.get("outfit_synthesis_source_image"):
+        new_preferences["outfit_synthesis_source_image"] = state.get("outfit_synthesis_source_image")
+    if "outfit_synthesis_payload" in state:
+        new_preferences["outfit_synthesis_payload"] = state.get("outfit_synthesis_payload")
+
     updated_user_profile = merge_user_profile(
         user_profile=state.get("user_profile") or {},
         new_preferences=new_preferences,
@@ -895,6 +949,27 @@ def resolve_pending_selection(state: ChatbotState) -> ChatbotState:
         pending_retouch = user_profile.get("pending_retouch")
         if pending_retouch:
             state["pending_retouch"] = pending_retouch
+
+    # outfit synthesis 관련 필드 복원
+    if not state.get("outfit_synthesis_source_image"):
+        v = user_profile.get("outfit_synthesis_source_image")
+        if v:
+            state["outfit_synthesis_source_image"] = v
+
+    if not state.get("outfit_synthesis_payload"):
+        v = user_profile.get("outfit_synthesis_payload")
+        if v:
+            state["outfit_synthesis_payload"] = v
+
+    if not state.get("outfit_occasion"):
+        v = user_profile.get("outfit_occasion")
+        if v:
+            state["outfit_occasion"] = v
+
+    if not state.get("latest_generated_image_url"):
+        v = user_profile.get("latest_generated_image_url")
+        if v:
+            state["latest_generated_image_url"] = v
 
     return state
 
@@ -1605,4 +1680,335 @@ def handle_recommendation_recall(state: ChatbotState) -> ChatbotState:
         "skipped_rag": True,
         "skip_reason": "recommendation_recall",
     }
+    return state
+
+
+# ---------------------------------------------------------------------------
+# New outfit flow — 이미지 업로드 없이 최근 생성 이미지 기반
+# ---------------------------------------------------------------------------
+
+def _no_rag_result(state: ChatbotState, reason: str) -> None:
+    state["retrieval_result"] = RetrievalResult(
+        query=state.get("user_message", ""),
+        documents=[],
+        retrieved_count=0,
+        fallback_stage=None,
+        used_filter={},
+    )
+    state["retrieval_info"] = {
+        "retrieved_count": 0,
+        "fallback_stage": "none",
+        "used_filter": {},
+        "skipped_rag": True,
+        "skip_reason": reason,
+    }
+
+
+def resolve_latest_generated_image(state: ChatbotState) -> str | None:
+    """
+    최근 생성된 이미지 URL을 다음 우선순위로 반환한다.
+    1. outfit_result_image_url (이번 턴 의상 합성 결과)
+    2. retouch_result_image_url / retouched_image_url (이번 턴 리터치 결과)
+    3. latest_generated_image_url (user_profile 경유로 이전 턴에서 복원된 URL)
+    4. sim_image_url (프론트엔드가 전달한 GAN 시뮬레이션 결과)
+    5. user_profile.current_image_url / analysis_image_url
+    """
+    user_profile = state.get("user_profile") or {}
+    return (
+        state.get("outfit_result_image_url")
+        or state.get("retouch_result_image_url")
+        or state.get("retouched_image_url")
+        or state.get("latest_generated_image_url")
+        or user_profile.get("latest_generated_image_url")
+        or state.get("sim_image_url")
+        or user_profile.get("current_image_url")
+        or user_profile.get("analysis_image_url")
+    )
+
+
+def _build_beauty_style_for_outfit(state: ChatbotState) -> dict:
+    previous_recommendations = state.get("previous_recommendations") or []
+    hair_recs = [r for r in previous_recommendations if r.get("category") == CATEGORY_HAIR]
+    makeup_recs = [r for r in previous_recommendations if r.get("category") == CATEGORY_MAKEUP]
+    user_profile = state.get("user_profile") or {}
+    return {
+        "selected_hair": hair_recs[0] if hair_recs else {},
+        "selected_makeup": makeup_recs[0] if makeup_recs else {},
+        "latest_retouch_summary": user_profile.get("retouch_request") or "",
+    }
+
+
+_OUTFIT_ADVICE_CONSTRAINTS = [
+    "추천은 실제 착용 가능한 의상 중심으로 한다.",
+    "헤어와 메이크업 분위기를 해치지 않는다.",
+    "퍼스널컬러와 조화되는 색상을 우선한다.",
+    "상황에 맞는 격식 수준을 지킨다.",
+    "과도하게 추상적인 설명보다 구체적인 아이템 조합을 제안한다.",
+]
+
+_OUTFIT_PRESERVE_CONDITIONS = [
+    "얼굴은 변경하지 않는다.",
+    "헤어스타일은 변경하지 않는다.",
+    "메이크업은 변경하지 않는다.",
+    "표정과 포즈는 유지한다.",
+    "배경은 최대한 유지한다.",
+    "의상만 자연스럽게 변경한다.",
+]
+
+
+def generate_outfit_advice(state: ChatbotState) -> ChatbotState:
+    """
+    outfit_advice intent — RAG 없이 LLM으로 텍스트 의상 추천을 생성한다.
+    이미지가 없어도 분석 정보 기반으로 추천 가능하다.
+    """
+    user_message = state.get("user_message", "")
+    occasion = detect_outfit_occasion(user_message) or state.get("outfit_occasion")
+    resolved_image = resolve_latest_generated_image(state)
+
+    payload = {
+        "source_image_url": resolved_image,
+        "user_profile": {
+            "gender": state.get("gender"),
+            "face_shape": state.get("face_shape"),
+            "face_proportion": state.get("face_proportion"),
+            "personal_color": state.get("personal_color"),
+            "skin_tone": (state.get("user_profile") or {}).get("skin_tone"),
+        },
+        "current_beauty_style": _build_beauty_style_for_outfit(state),
+        "user_request": {
+            "type": INTENT_OUTFIT_ADVICE,
+            "occasion": occasion,
+            "raw_text": user_message,
+        },
+        "constraints": _OUTFIT_ADVICE_CONSTRAINTS,
+    }
+
+    state["intent"] = INTENT_OUTFIT_ADVICE
+    state["outfit_occasion"] = occasion
+
+    if os.getenv("RAG_GENERATOR_MODE", "gemini") == "mock":
+        occasion_label = OCCASION_LABELS.get(occasion or "", "상황")
+        state["answer"] = (
+            f"{occasion_label} 상황에 어울리는 의상 추천입니다. (개발용 mock 응답)\n"
+            "아이보리 블라우스 + 베이지 슬랙스 + 라이트 브라운 로퍼 조합을 추천드려요."
+        )
+    else:
+        prompt = build_outfit_advice_prompt(payload)
+        chat_model = get_chat_model()
+        response = invoke_with_retry(chat_model, prompt)
+        state["answer"] = normalize_model_content(getattr(response, "content", response))
+
+    _no_rag_result(state, INTENT_OUTFIT_ADVICE)
+    return state
+
+
+def analyze_outfit_synthesis_request(state: ChatbotState) -> ChatbotState:
+    """
+    outfit_synthesis intent — 최근 생성 이미지를 확인하고 명확/불명확 요청에 따라 분기한다.
+    이미지 없음 → 안내 후 종료.
+    명확 요청 → 합성 확인 버튼 제시.
+    불명확 요청 → 방향 재질문.
+    """
+    user_message = state.get("user_message", "")
+    resolved_image = resolve_latest_generated_image(state)
+
+    state["intent"] = INTENT_OUTFIT_SYNTHESIS
+
+    # 기준 이미지 없음 → 안내 후 종료
+    if not resolved_image:
+        state["answer"] = (
+            "아직 기준이 되는 스타일 결과 이미지가 없어요.\n"
+            "먼저 헤어 또는 메이크업 리터치를 진행한 뒤 의상 합성을 할 수 있어요."
+        )
+        state["pending_selection"] = None
+        state["selection"] = None
+        _no_rag_result(state, "outfit_synthesis_no_image")
+        return state
+
+    occasion = detect_outfit_occasion(user_message) or state.get("outfit_occasion")
+    needs_clarification = is_outfit_clarification_needed(user_message)
+
+    # 방향 불명확 → 재질문
+    if needs_clarification and not occasion:
+        state["answer"] = (
+            "어떤 상황이나 느낌의 의상으로 합성할까요?\n\n"
+            "예를 들면:\n- 면접룩\n- 결혼식 하객룩\n- 소개팅룩\n- 나들이룩\n"
+            "- 아이보리 블라우스와 베이지 슬랙스"
+        )
+        state["pending_selection"] = PENDING_OUTFIT_CLARIFICATION
+        state["selection"] = None
+        state["outfit_synthesis_source_image"] = resolved_image
+        _no_rag_result(state, "outfit_synthesis_clarification")
+        return state
+
+    # 명확한 요청 → 확인 단계
+    occasion_label = OCCASION_LABELS.get(occasion or "", occasion or "상황 정보 없음")
+    normalized_request = user_message.strip()
+
+    state["outfit_occasion"] = occasion
+    state["outfit_synthesis_source_image"] = resolved_image
+    state["outfit_synthesis_payload"] = {
+        "source_image_url": resolved_image,
+        "user_profile": {
+            "gender": state.get("gender"),
+            "face_shape": state.get("face_shape"),
+            "face_proportion": state.get("face_proportion"),
+            "personal_color": state.get("personal_color"),
+            "skin_tone": (state.get("user_profile") or {}).get("skin_tone"),
+        },
+        "current_beauty_style": _build_beauty_style_for_outfit(state),
+        "outfit_request": {
+            "occasion": occasion,
+            "requested_change": normalized_request,
+            "raw_text": user_message,
+        },
+        "preserve": _OUTFIT_PRESERVE_CONDITIONS,
+    }
+
+    state["answer"] = (
+        f"다음 내용으로 의상 합성을 진행할까요?\n\n"
+        f"- 상황: {occasion_label}\n"
+        f"- 의상 방향: {normalized_request}\n"
+        f"- 기준 이미지: 최근 생성된 스타일 이미지\n"
+        f"- 유지 조건: 얼굴, 헤어, 메이크업, 표정, 포즈는 유지"
+    )
+    state["pending_selection"] = PENDING_OUTFIT_CONFIRMATION
+    state["selection"] = {
+        "type": PENDING_OUTFIT_CONFIRMATION,
+        "options": [
+            {"id": "confirm_outfit_synthesis", "label": "의상 합성하기"},
+            {"id": "cancel_outfit_synthesis", "label": "취소하기"},
+        ],
+    }
+    _no_rag_result(state, "outfit_synthesis_pending_confirmation")
+    return state
+
+
+def handle_outfit_clarification(state: ChatbotState) -> ChatbotState:
+    """
+    PENDING_OUTFIT_CLARIFICATION 처리 — 유저가 의상 방향을 입력한 뒤 확인 단계로 이동한다.
+    """
+    user_message = state.get("user_message", "")
+    user_profile = state.get("user_profile") or {}
+
+    resolved_image = (
+        state.get("outfit_synthesis_source_image")
+        or user_profile.get("outfit_synthesis_source_image")
+        or resolve_latest_generated_image(state)
+    )
+
+    state["pending_selection"] = None
+    state["selection"] = None
+
+    if not resolved_image:
+        state["answer"] = (
+            "아직 기준이 되는 스타일 결과 이미지가 없어요.\n"
+            "먼저 헤어 또는 메이크업 리터치를 진행한 뒤 의상 합성을 할 수 있어요."
+        )
+        _no_rag_result(state, "outfit_synthesis_no_image")
+        return state
+
+    occasion = detect_outfit_occasion(user_message) or state.get("outfit_occasion")
+    occasion_label = OCCASION_LABELS.get(occasion or "", user_message[:20] or "상황 정보 없음")
+    normalized_request = user_message.strip()
+
+    state["outfit_occasion"] = occasion
+    state["outfit_synthesis_source_image"] = resolved_image
+    state["outfit_synthesis_payload"] = {
+        "source_image_url": resolved_image,
+        "user_profile": {
+            "gender": state.get("gender"),
+            "face_shape": state.get("face_shape"),
+            "face_proportion": state.get("face_proportion"),
+            "personal_color": state.get("personal_color"),
+            "skin_tone": user_profile.get("skin_tone"),
+        },
+        "current_beauty_style": _build_beauty_style_for_outfit(state),
+        "outfit_request": {
+            "occasion": occasion,
+            "requested_change": normalized_request,
+            "raw_text": user_message,
+        },
+        "preserve": _OUTFIT_PRESERVE_CONDITIONS,
+    }
+
+    state["answer"] = (
+        f"다음 내용으로 의상 합성을 진행할까요?\n\n"
+        f"- 상황: {occasion_label}\n"
+        f"- 의상 방향: {normalized_request}\n"
+        f"- 기준 이미지: 최근 생성된 스타일 이미지\n"
+        f"- 유지 조건: 얼굴, 헤어, 메이크업, 표정, 포즈는 유지"
+    )
+    state["pending_selection"] = PENDING_OUTFIT_CONFIRMATION
+    state["selection"] = {
+        "type": PENDING_OUTFIT_CONFIRMATION,
+        "options": [
+            {"id": "confirm_outfit_synthesis", "label": "의상 합성하기"},
+            {"id": "cancel_outfit_synthesis", "label": "취소하기"},
+        ],
+    }
+    _no_rag_result(state, "outfit_clarification_to_confirmation")
+    return state
+
+
+def handle_outfit_confirmation(state: ChatbotState) -> ChatbotState:
+    """
+    PENDING_OUTFIT_CONFIRMATION 처리 — 확인이면 합성 진행, 취소면 종료한다.
+    """
+    selected_option = state.get("selected_option") or {}
+    selected_id = selected_option.get("id")
+
+    state["pending_selection"] = None
+    state["selection"] = None
+
+    if selected_id == "cancel_outfit_synthesis":
+        state["outfit_synthesis_action"] = "cancel"
+        state["outfit_synthesis_payload"] = None
+        state["answer"] = "의상 합성을 취소했습니다. 다른 궁금한 점이 있으시면 말씀해 주세요."
+        _no_rag_result(state, "outfit_synthesis_cancelled")
+        return state
+
+    state["outfit_synthesis_action"] = "confirm"
+    _no_rag_result(state, "outfit_synthesis_confirmed")
+    return state
+
+
+def run_new_outfit_synthesis(state: ChatbotState) -> ChatbotState:
+    """
+    의상 합성 실행 — Gemini imagen으로 최근 생성 이미지에 의상만 변경한다.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    payload = state.get("outfit_synthesis_payload") or {}
+    source_image_url = payload.get("source_image_url") or resolve_latest_generated_image(state)
+
+    state["outfit_synthesis_action"] = None
+    state["outfit_synthesis_payload"] = None
+
+    if not source_image_url:
+        state["answer"] = "합성에 사용할 기준 이미지를 찾을 수 없어요."
+        _no_rag_result(state, "outfit_synthesis_no_image")
+        return state
+
+    if os.getenv("RAG_GENERATOR_MODE", "gemini") == "mock":
+        state["answer"] = "의상 합성이 완료됐어요. (개발용 mock 응답)"
+        state["outfit_result_image_url"] = None
+        _no_rag_result(state, "outfit_synthesis_mock")
+        return state
+
+    try:
+        prompt_text = build_outfit_synthesis_prompt_text(payload)
+        result_url = call_gemini_image_synthesis(source_image_url, prompt_text)
+        state["outfit_result_image_url"] = result_url
+        state["answer"] = (
+            "의상 합성이 완료됐어요. 아래 이미지를 확인해 주세요.\n"
+            "더 수정이 필요하시면 말씀해 주세요."
+        )
+    except Exception as exc:
+        logger.error("[run_new_outfit_synthesis] Gemini 호출 실패: %s", exc, exc_info=True)
+        state["outfit_result_image_url"] = None
+        state["answer"] = "의상 합성 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요."
+
+    _no_rag_result(state, "outfit_synthesis_done")
     return state

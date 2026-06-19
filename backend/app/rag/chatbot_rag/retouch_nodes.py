@@ -379,6 +379,43 @@ def _call_gemini_image_edit(payload: dict[str, Any]) -> str:
     raise ValueError("Gemini 이미지 응답에서 이미지를 찾을 수 없습니다.")
 
 
+def call_gemini_image_synthesis(source_url: str, prompt_text: str) -> str:
+    """
+    Gemini imagen으로 이미지를 편집하고 저장된 URL을 반환한다.
+    retouch 외 outfit 합성 등 범용적으로 재사용할 수 있다.
+    """
+    image_bytes, mime_type = _download_image(source_url)
+
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options={"api_version": "v1beta"},
+    )
+
+    response = client.models.generate_content(
+        model=GEMINI_IMAGE_MODEL,
+        contents=[
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                    types.Part.from_text(text=prompt_text),
+                ],
+            )
+        ],
+        config=types.GenerateContentConfig(
+            response_modalities=["IMAGE"],
+            candidate_count=1,
+        ),
+    )
+
+    for part in response.candidates[0].content.parts:
+        if part.inline_data:
+            result_mime = part.inline_data.mime_type or "image/png"
+            return _save_image_to_media(part.inline_data.data, result_mime)
+
+    raise ValueError("Gemini 이미지 응답에서 이미지를 찾을 수 없습니다.")
+
+
 # ---------------------------------------------------------------------------
 # Retouch flow nodes
 # ---------------------------------------------------------------------------

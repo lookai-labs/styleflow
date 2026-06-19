@@ -53,6 +53,7 @@ type ApiResponse = {
   selection?: Selection | null;
   pending_selection?: string | null;
   retouched_image_url?: string | null;
+  outfit_result_image_url?: string | null;
   category?: string | null;
 };
 
@@ -271,8 +272,10 @@ export default function AIStylistPage() {
     setUserProfile(data.updated_user_profile ?? {});
 
     const retouchedUrl = data.retouched_image_url ?? null;
-    if (retouchedUrl) {
-      setLatestAiImage(retouchedUrl);
+    const outfitResultUrl = data.outfit_result_image_url ?? null;
+    const generatedImageUrl = outfitResultUrl ?? retouchedUrl;
+    if (generatedImageUrl) {
+      setLatestAiImage(generatedImageUrl);
     }
 
     const isCompleteMode = !!consultData?.simulationResultId;
@@ -288,7 +291,7 @@ export default function AIStylistPage() {
       target_type: feedbackTargetType,
       simulation_result_id: consultData?.simulationResultId ?? null,
       applied_style_key: appliedStyleKey,
-      ...(retouchedUrl ? { img_url: retouchedUrl } : {}),
+      ...(generatedImageUrl ? { img_url: generatedImageUrl } : {}),
     }).catch((e) => console.error("[AI Stylist] feedback 저장 실패:", e?.response?.data ?? e));
 
     setTimeout(() => {
@@ -299,7 +302,7 @@ export default function AIStylistPage() {
         {
           role: "assistant",
           content: data.reply,
-          ...(retouchedUrl ? { image: retouchedUrl, retouched: true } : {}),
+          ...(generatedImageUrl ? { image: generatedImageUrl, retouched: true } : {}),
           ...(hasSelection ? { selection: data.selection! } : {}),
         },
       ]);

@@ -468,6 +468,10 @@ def ai_chat(request):
     if retouched_image_url and retouched_image_url.startswith('/'):
         retouched_image_url = request.build_absolute_uri(retouched_image_url)
 
+    outfit_result_image_url = result.get('outfit_result_image_url')
+    if outfit_result_image_url and outfit_result_image_url.startswith('/'):
+        outfit_result_image_url = request.build_absolute_uri(outfit_result_image_url)
+
     return Response({
         'reply': result.get('answer', ''),
         'updated_chat_history': result.get('updated_chat_history', []),
@@ -475,6 +479,7 @@ def ai_chat(request):
         'selection': result.get('selection'),
         'pending_selection': result.get('pending_selection'),
         'retouched_image_url': retouched_image_url,
+        'outfit_result_image_url': outfit_result_image_url,
         'category': result.get('category'),
     })
 

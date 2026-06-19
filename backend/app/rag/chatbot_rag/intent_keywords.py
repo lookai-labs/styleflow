@@ -11,9 +11,11 @@ from backend.app.rag.chatbot_rag.intents import (
     INTENT_MEMORY_RECALL,
     INTENT_MOOD_SELECTION,
     INTENT_NOISE,
+    INTENT_OUTFIT_ADVICE,
     INTENT_OUTFIT_EVENT_COORDINATION,
     INTENT_OUTFIT_FIT_CHECK,
     INTENT_OUTFIT_RECOMMENDATION,
+    INTENT_OUTFIT_SYNTHESIS,
     INTENT_SMALLTALK,
     INTENT_STYLE_RETOUCH,
     INTENT_STYLE_EXPLANATION,
@@ -479,6 +481,98 @@ OUTFIT_FIT_CHECK_PHRASES = [
 ]
 
 # ---------------------------------------------------------------------------
+# outfit_synthesis 감지 — 이미지 합성 요청 표현
+# ---------------------------------------------------------------------------
+
+OUTFIT_SYNTHESIS_PHRASES = [
+    "합성해줘", "합성해 줘", "합성해줘요", "합성해주세요",
+    "입혀줘", "입혀 줘", "입혀줘요", "입혀주세요",
+    "의상 합성", "옷 합성",
+    "으로 합성", "로 합성",
+    "으로 입혀", "로 입혀",
+    "으로 바꿔줘", "로 바꿔줘",
+    "룩으로 바꿔", "룩으로 합성", "룩 입혀",
+    "옷 바꿔", "의상 바꿔", "옷을 바꿔", "의상을 바꿔",
+    "옷 변경", "의상 변경",
+]
+
+# 합성은 원하지만 구체적 방향이 없는 모호한 표현
+OUTFIT_SYNTHESIS_AMBIGUOUS_PHRASES = [
+    "옷 바꿔줘",
+    "의상 바꿔줘",
+    "잘 어울리게 입혀줘",
+    "예쁘게 입혀줘",
+    "입혀줘",
+    "바꿔줘",
+]
+
+# ---------------------------------------------------------------------------
+# occasion 키워드
+# ---------------------------------------------------------------------------
+
+OCCASION_KEYWORDS: dict[str, list[str]] = {
+    "interview": ["면접", "면접룩", "취업", "회사 면접"],
+    "wedding_guest": ["결혼식", "하객", "하객룩", "웨딩"],
+    "blind_date": ["소개팅", "첫만남", "데이트", "데이트룩"],
+    "outing": ["나들이", "피크닉", "산책", "주말"],
+    "office": ["출근", "회사", "오피스", "오피스룩"],
+    "daily": ["데일리", "일상", "캐주얼", "캐주얼룩"],
+}
+
+# outfit_advice 감지 — 텍스트 추천 요청 표현
+OUTFIT_ADVICE_PHRASES = [
+    "추천해줘", "추천해 줘", "추천해줘요", "추천해주세요",
+    "알려줘", "알려 줘", "알려줘요", "알려주세요",
+    "어울리는 옷", "어울리는 코디", "어울리는 의상",
+    "코디 추천", "룩 추천", "의상 추천", "옷 추천",
+    "어떤 옷", "어떤 코디", "뭐 입",
+]
+
+
+def detect_outfit_occasion(message: str) -> str | None:
+    """사용자 메시지에서 상황 키워드를 감지해 occasion id를 반환한다."""
+    msg = message.strip().lower()
+    for occasion_id, keywords in OCCASION_KEYWORDS.items():
+        if any(kw in msg for kw in keywords):
+            return occasion_id
+    return None
+
+
+def is_outfit_synthesis_request(message: str) -> bool:
+    """의상을 이미지에 합성/변경하는 요청인지 판별한다."""
+    msg = message.strip().lower()
+    return any(phrase in msg for phrase in OUTFIT_SYNTHESIS_PHRASES)
+
+
+def is_outfit_advice_request(message: str) -> bool:
+    """텍스트 의상 추천 요청인지 판별한다."""
+    msg = message.strip().lower()
+    if any(phrase in msg for phrase in OUTFIT_ADVICE_PHRASES):
+        return True
+    # 상황 키워드 + 의상 명사 조합
+    all_occasion_kws = [kw for kws in OCCASION_KEYWORDS.values() for kw in kws]
+    outfit_nouns = ["의상", "옷", "코디", "룩"]
+    has_occasion = any(kw in msg for kw in all_occasion_kws)
+    has_noun = any(kw in msg for kw in outfit_nouns)
+    return has_occasion and has_noun
+
+
+def is_outfit_clarification_needed(message: str) -> bool:
+    """의상 합성을 원하지만 구체적인 방향이 불명확한 요청인지 판별한다."""
+    msg = message.strip().lower()
+    # 상황 키워드나 구체적 의상 방향이 있으면 명확한 요청
+    all_occasion_kws = [kw for kws in OCCASION_KEYWORDS.values() for kw in kws]
+    specific_items = [
+        "블라우스", "슬랙스", "정장", "원피스", "청바지", "치마", "재킷",
+        "코트", "캐주얼", "포멀", "드레스", "수트",
+    ]
+    has_direction = any(kw in msg for kw in all_occasion_kws + specific_items)
+    if has_direction:
+        return False
+    # 방향 없이 합성 동사만 있으면 불명확
+    return any(phrase in msg for phrase in OUTFIT_SYNTHESIS_AMBIGUOUS_PHRASES)
+
+# ---------------------------------------------------------------------------
 # style_explanation — 선택된 스타일에 대한 설명/정의 질문 감지
 #
 # 지시어(이거/이건/이 메이크업/이 스타일 등) + 설명 요청어의 조합으로 판별한다.
@@ -853,11 +947,9 @@ def _is_outfit_request(message: str) -> bool:
 
 
 def _get_outfit_intent(message: str) -> str:
-    if _has_any(message, OUTFIT_FIT_CHECK_PHRASES):
-        return INTENT_OUTFIT_FIT_CHECK
-    if _has_any(message, OUTFIT_EVENT_KEYWORDS):
-        return INTENT_OUTFIT_EVENT_COORDINATION
-    return INTENT_OUTFIT_RECOMMENDATION
+    if is_outfit_synthesis_request(message):
+        return INTENT_OUTFIT_SYNTHESIS
+    return INTENT_OUTFIT_ADVICE
 
 
 def _has_explicit_comparison(message: str) -> bool:

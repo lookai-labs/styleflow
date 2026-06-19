@@ -52,3 +52,11 @@ INTENT_CATEGORY_CONFLICT = "category_conflict"
 INTENT_MEMORY_RECALL = "memory_recall"
 INTENT_FOLLOWUP_RECOMMENDATION = "followup_recommendation"
 INTENT_RECOMMENDATION_RECALL = "recommendation_recall"
+
+# outfit (new) intents — image-upload-free, latest-generated-image based
+INTENT_OUTFIT_ADVICE = "outfit_advice"
+INTENT_OUTFIT_SYNTHESIS = "outfit_synthesis"
+
+# outfit (new) pending types
+PENDING_OUTFIT_CLARIFICATION = "outfit_clarification"
+PENDING_OUTFIT_CONFIRMATION = "outfit_confirmation"

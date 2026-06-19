@@ -6,6 +6,15 @@ from typing import Any
 
 from backend.app.rag.chatbot_rag.intents import INTENT_OUTFIT_FIT_CHECK
 
+OCCASION_LABELS: dict[str, str] = {
+    "interview": "면접",
+    "wedding_guest": "결혼식 하객",
+    "blind_date": "소개팅/데이트",
+    "outing": "나들이/피크닉",
+    "office": "출근/오피스",
+    "daily": "데일리/캐주얼",
+}
+
 _OUTFIT_CONTEXT_LABELS: dict[str, str] = {
     "daily": "데일리룩",
     "date": "데이트룩",
@@ -198,3 +207,106 @@ def parse_outfit_response(
         outfit_options = [{"id": "uploaded_outfit", "label": "업로드한 의상", "source": "image"}]
 
     return answer, outfit_options
+
+
+# ---------------------------------------------------------------------------
+# 새 outfit_advice 프롬프트 빌더
+# ---------------------------------------------------------------------------
+
+def build_outfit_advice_prompt(payload: dict[str, Any]) -> str:
+    """
+    outfit_advice intent용 LLM 프롬프트.
+    이미지 없이도 분석 정보와 선택 스타일 기반으로 의상 추천을 생성한다.
+    """
+    user_profile = payload.get("user_profile") or {}
+    beauty_style = payload.get("current_beauty_style") or {}
+    user_request = payload.get("user_request") or {}
+    constraints = payload.get("constraints") or []
+
+    source_image_url = payload.get("source_image_url")
+    image_line = (
+        f"기준 이미지: {source_image_url}" if source_image_url
+        else "기준 이미지: 없음 (분석 정보 기반으로 추천)"
+    )
+
+    hair = beauty_style.get("selected_hair") or {}
+    makeup = beauty_style.get("selected_makeup") or {}
+    hair_name = hair.get("style_name", "") if isinstance(hair, dict) else str(hair)
+    makeup_name = makeup.get("style_name", "") if isinstance(makeup, dict) else str(makeup)
+    retouch_summary = beauty_style.get("latest_retouch_summary") or ""
+
+    occasion = user_request.get("occasion") or ""
+    occasion_label = OCCASION_LABELS.get(occasion, occasion or "상황 정보 없음")
+    raw_text = user_request.get("raw_text", "")
+
+    personal_color = user_profile.get("personal_color") or "정보 없음"
+    gender = user_profile.get("gender") or "정보 없음"
+    face_shape = user_profile.get("face_shape") or "정보 없음"
+
+    constraints_str = "\n".join(f"- {c}" for c in constraints) if constraints else ""
+
+    beauty_section = ""
+    if hair_name:
+        beauty_section += f"- 헤어: {hair_name}\n"
+    if makeup_name:
+        beauty_section += f"- 메이크업: {makeup_name}\n"
+    if retouch_summary:
+        beauty_section += f"- 최근 수정 요청: {retouch_summary}\n"
+    if not beauty_section:
+        beauty_section = "- 현재 스타일 정보 없음\n"
+
+    return f"""당신은 헤어·메이크업 스타일 분석 결과를 바탕으로 상황에 맞는 의상을 추천하는 AI 스타일리스트입니다.
+
+[사용자 진단 정보]
+- 성별: {gender}
+- 얼굴형: {face_shape}
+- 퍼스널컬러: {personal_color}
+
+[현재 뷰티 스타일]
+{beauty_section.rstrip()}
+
+[{image_line}]
+
+[추천 상황]
+{occasion_label}
+
+[사용자 요청]
+{raw_text}
+
+[추천 조건]
+{constraints_str}
+
+위 정보를 바탕으로 {occasion_label} 상황에 어울리는 의상 조합을 2~3가지 구체적으로 추천해 주세요.
+{personal_color} 퍼스널컬러와 조화되는 색상을 우선으로 하고, 헤어·메이크업 분위기를 해치지 않는 스타일을 제안해 주세요.
+존댓말을 사용하고, 인사말·감탄문·과한 칭찬은 쓰지 마세요.
+구체적인 아이템 조합(상의 + 하의 + 신발 등)으로 제안하고 색상도 명시해 주세요.
+피해야 할 색상이나 스타일도 간략히 언급해 주세요."""
+
+
+def build_outfit_synthesis_prompt_text(payload: dict[str, Any]) -> str:
+    """
+    outfit_synthesis용 Gemini 이미지 편집 프롬프트 텍스트.
+    """
+    user_profile = payload.get("user_profile") or {}
+    outfit_request = payload.get("outfit_request") or {}
+    preserve = payload.get("preserve") or []
+
+    occasion = outfit_request.get("occasion") or ""
+    occasion_label = OCCASION_LABELS.get(occasion, occasion or "상황 정보 없음")
+    requested_change = outfit_request.get("requested_change") or outfit_request.get("raw_text", "")
+    personal_color = user_profile.get("personal_color") or ""
+
+    preserve_str = "\n".join(f"- {p}" for p in preserve) if preserve else ""
+
+    return f"""제공된 인물 사진을 기준으로 의상만 자연스럽게 변경해 주세요.
+요청 상황: {occasion_label}
+요청 의상 방향: {requested_change}
+
+얼굴, 헤어스타일, 메이크업, 표정, 포즈, 배경은 유지해 주세요.
+의상은 {personal_color} 퍼스널컬러와 조화되게 연출해 주세요.
+상황에 맞는 격식과 분위기를 반영해 주세요.
+실제 촬영된 자연스러운 인물 사진처럼 보이게 해 주세요.
+
+Only change the outfit.
+Preserve face, hairstyle, makeup, expression, pose, and background.
+{preserve_str}""".strip()
