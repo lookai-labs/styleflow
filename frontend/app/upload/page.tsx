@@ -18,6 +18,26 @@ const analysisSteps = [
   "AI 시뮬레이션 준비 중",
 ];
 
+const FALLBACK_ANALYSIS_RESULT = {
+  hair_analysis_summary:
+    "RAG 분석 서버 연결이 불안정해 기본 분석 결과로 진행합니다. 둥근형 얼굴에는 이마와 옆선을 정돈해 세로감을 보완하는 스타일을 우선 추천합니다.",
+  makeup_analysis_summary:
+    "RAG 분석 서버 연결이 불안정해 기본 분석 결과로 진행합니다. 봄웜 톤에는 코랄, 피치, 내추럴 계열 메이크업을 우선 추천합니다.",
+  face_shape: "둥근형",
+  skin_tone: "spring",
+  personal_color: "봄웜",
+  hair_mappings: [
+    { id: 0, style_name: "아이비리그", style_code: "m-03", image_url: "" },
+    { id: 1, style_name: "댄디", style_code: "m-08", image_url: "" },
+    { id: 2, style_name: "애즈", style_code: "m-12", image_url: "" },
+  ],
+  makeup_mappings: [
+    { id: 0, style_name: "코랄 메이크업", style_code: "mk-sp-coral", image_url: "" },
+    { id: 1, style_name: "피치 메이크업", style_code: "mk-sp-peach", image_url: "" },
+    { id: 2, style_name: "봄웜 내추럴 메이크업", style_code: "mk-m-sp-natural", image_url: "" },
+  ],
+};
+
 function UploadPageInner() {
   const router = useRouter();
   const authorized = useRequireAuth();
@@ -75,34 +95,59 @@ function UploadPageInner() {
     setTimeout(async () => {
       setIsAnalyzing(true);
 
-      // RAG 분석 API 호출 — 실패해도 더미 데이터로 진행
-      try {
-        const res = await api.post("/analyze/", {
-          face_shape: "round",
-          face_point: "golden",
-          skin_tone: "spring",
-        });
-        localStorage.setItem(
-          "styleflow_analysis_result",
-          JSON.stringify(res.data)
-        );
-      } catch (e) {
-        console.warn("RAG 분석 실패, 더미 데이터로 진행:", e);
-        localStorage.removeItem("styleflow_analysis_result");
+      // API 호출과 애니메이션을 병렬 실행, 둘 다 끝나면 이동
+      const formData = new FormData();
+      formData.append("face_shape", "round");
+      formData.append("face_point", "golden");
+      formData.append("skin_tone", "spring");
+
+      if (uploadedFile) {
+        formData.append("face_image", uploadedFile);
+      } else {
+        const faceDataUrl = localStorage.getItem("styleflow_face_image");
+        if (faceDataUrl) {
+          const [header, base64] = faceDataUrl.split(",");
+          const mime = header.match(/:(.*?);/)?.[1] ?? "image/jpeg";
+          const binary = atob(base64);
+          const arr = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
+          const blob = new Blob([arr], { type: mime });
+          formData.append("face_image", new File([blob], "face.jpg", { type: mime }));
+        }
       }
 
-      let step = 0;
-      intervalRef.current = setInterval(() => {
-        step++;
-        setCurrentStep(step);
-        if (step >= analysisSteps.length) {
-          if (intervalRef.current) clearInterval(intervalRef.current);
-          intervalRef.current = null;
-          setTimeout(() => {
-            router.push(`/result/${type}`);
-          }, 500);
-        }
-      }, 800);
+      const apiCall = api.post("/analyze/", formData)
+        .then((res) => {
+          localStorage.setItem("styleflow_analysis_result", JSON.stringify(res.data));
+        })
+        .catch((e) => {
+          console.warn("RAG 분석 실패, 더미 데이터로 진행:", e);
+          localStorage.setItem("styleflow_analysis_result", JSON.stringify(FALLBACK_ANALYSIS_RESULT));
+        });
+
+      const animation = new Promise<void>((resolve) => {
+        let step = 0;
+        intervalRef.current = setInterval(() => {
+          step++;
+          setCurrentStep(step);
+          if (step >= analysisSteps.length) {
+            if (intervalRef.current) clearInterval(intervalRef.current);
+            intervalRef.current = null;
+            resolve();
+          }
+        }, 800);
+      });
+
+      try {
+        await Promise.all([apiCall, animation]);
+      } catch (e) {
+        console.warn("분석 처리 중 예외가 발생해 fallback 결과로 진행합니다:", e);
+        localStorage.setItem("styleflow_analysis_result", JSON.stringify(FALLBACK_ANALYSIS_RESULT));
+      } finally {
+        setTimeout(() => {
+          router.push(`/result/${type}`);
+        }, 500);
+      }
     }, 300);
   };
 

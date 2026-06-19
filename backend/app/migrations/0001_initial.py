@@ -183,7 +183,7 @@ class Migration(migrations.Migration):
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
                         related_name="style_mappings",
-                        to="api.analysissession",
+                        to="app.analysissession",
                     ),
                 ),
                 (
@@ -193,7 +193,7 @@ class Migration(migrations.Migration):
                         null=True,
                         on_delete=django.db.models.deletion.SET_NULL,
                         related_name="style_mappings",
-                        to="api.hairstyle",
+                        to="app.hairstyle",
                     ),
                 ),
                 (
@@ -203,7 +203,7 @@ class Migration(migrations.Migration):
                         null=True,
                         on_delete=django.db.models.deletion.SET_NULL,
                         related_name="style_mappings",
-                        to="api.makeupstyle",
+                        to="app.makeupstyle",
                     ),
                 ),
                 (
@@ -211,7 +211,7 @@ class Migration(migrations.Migration):
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
                         related_name="style_mappings",
-                        to="api.user",
+                        to="app.user",
                     ),
                 ),
             ],
@@ -242,7 +242,7 @@ class Migration(migrations.Migration):
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
                         related_name="simulation_results",
-                        to="api.analysissession",
+                        to="app.analysissession",
                     ),
                 ),
                 (
@@ -252,7 +252,7 @@ class Migration(migrations.Migration):
                         null=True,
                         on_delete=django.db.models.deletion.SET_NULL,
                         related_name="hair_results",
-                        to="api.stylemappinglist",
+                        to="app.stylemappinglist",
                     ),
                 ),
                 (
@@ -262,7 +262,7 @@ class Migration(migrations.Migration):
                         null=True,
                         on_delete=django.db.models.deletion.SET_NULL,
                         related_name="makeup_results",
-                        to="api.stylemappinglist",
+                        to="app.stylemappinglist",
                     ),
                 ),
                 (
@@ -270,7 +270,7 @@ class Migration(migrations.Migration):
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
                         related_name="simulation_results",
-                        to="api.user",
+                        to="app.user",
                     ),
                 ),
             ],
@@ -285,7 +285,7 @@ class Migration(migrations.Migration):
             field=models.ForeignKey(
                 on_delete=django.db.models.deletion.CASCADE,
                 related_name="analysis_sessions",
-                to="api.user",
+                to="app.user",
             ),
         ),
         migrations.CreateModel(
@@ -317,7 +317,7 @@ class Migration(migrations.Migration):
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
                         related_name="feedbacks",
-                        to="api.simulationresult",
+                        to="app.simulationresult",
                     ),
                 ),
                 (
@@ -325,7 +325,7 @@ class Migration(migrations.Migration):
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
                         related_name="feedbacks",
-                        to="api.user",
+                        to="app.user",
                     ),
                 ),
             ],

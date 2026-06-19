@@ -35,6 +35,7 @@ class HairStyle(models.Model):
 
 
 class MakeupStyle(models.Model):
+    style_code = models.CharField(max_length=20, null=True, blank=True, unique=True)
     style_name = models.CharField(max_length=100)
     image_url = models.CharField(max_length=500, null=True, blank=True)
 
@@ -148,15 +149,16 @@ class SimulationResult(models.Model):
 
 class UserFeedback(models.Model):
     TARGET_TYPE_CHOICES = [('hair', 'hair'), ('makeup', 'makeup')]
-    ROLE_CHOICES = [('ai', 'ai'), ('user', 'user')]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='feedbacks')
     simulation_result = models.ForeignKey(
-        SimulationResult, on_delete=models.CASCADE, related_name='feedbacks'
+        SimulationResult, on_delete=models.SET_NULL,
+        related_name='feedbacks', null=True, blank=True
     )
 
     target_type = models.CharField(max_length=6, choices=TARGET_TYPE_CHOICES)
-    role = models.CharField(max_length=4, choices=ROLE_CHOICES)
+    user_chat = models.TextField(null=True, blank=True)
+    ai_chat = models.TextField(null=True, blank=True)
     img_url = models.CharField(max_length=100, null=True, blank=True)
     applied_style_key = models.CharField(max_length=100, null=True, blank=True)
 

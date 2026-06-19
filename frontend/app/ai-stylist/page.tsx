@@ -26,6 +26,7 @@ type Message = {
   role: "assistant" | "user";
   content?: string;
   image?: string;
+  retouched?: boolean;
   selection?: Selection;
 };
 
@@ -35,6 +36,14 @@ type ConsultData = {
   style: string;
   allStyles: string;
   currentStyleIndex: number;
+  styleName?: string;
+  simulationResultId?: number | null;
+  hairMappings?: Array<{ id: number; style_name: string; style_code?: string }>;
+  makeupMappings?: Array<{ id: number; style_name: string; style_code?: string }>;
+  faceShape?: string | null;
+  personalColor?: string | null;
+  hairSummary?: string | null;
+  makeupSummary?: string | null;
 };
 
 type ApiResponse = {
@@ -43,6 +52,7 @@ type ApiResponse = {
   updated_user_profile: Record<string, unknown>;
   selection?: Selection | null;
   pending_selection?: string | null;
+  retouched_image_url?: string | null;
 };
 
 /* ── API 실패 시 폴백 텍스트 ── */
@@ -53,17 +63,32 @@ const FALLBACK_TEXTS = [
 ];
 let fallbackCursor = 0;
 
+/* ── 타이핑 인디케이터 ── */
+function TypingIndicator() {
+  return (
+    <div className="max-w-[75%] p-4 rounded-lg bg-gray-100">
+      <div className="flex gap-1.5 items-center h-5">
+        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
+        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
+        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
+      </div>
+    </div>
+  );
+}
+
 /* ── 말풍선 컴포넌트 ── */
 function Bubble({
   msg,
   onSelectOption,
+  onApplyRetouched,
 }: {
   msg: Message;
   onSelectOption?: (selection: Selection, option: SelectionOption) => void;
+  onApplyRetouched?: (imageUrl: string) => void;
 }) {
   const isUser = msg.role === "user";
 
-  if (msg.image && !msg.content && !msg.selection) {
+  if (msg.image && !msg.content && !msg.selection && !msg.retouched) {
     return <img src={msg.image} alt="이미지" className="w-48 rounded-lg" />;
   }
 
@@ -74,8 +99,19 @@ function Bubble({
       }`}
     >
       {msg.content && <p className="whitespace-pre-line">{msg.content}</p>}
-      {msg.image && (
+      {msg.image && !msg.retouched && (
         <img src={msg.image} alt="이미지" className="w-full rounded-lg mt-3" />
+      )}
+      {msg.image && msg.retouched && (
+        <div
+          className="relative w-full mt-3 cursor-pointer group"
+          onClick={() => onApplyRetouched?.(msg.image!)}
+        >
+          <img src={msg.image} alt="리터칭 결과" className="w-full rounded-lg" />
+          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity rounded-lg flex items-center justify-center">
+            <span className="text-white text-sm font-medium">클릭하여 적용</span>
+          </div>
+        </div>
       )}
       {msg.selection && (
         <div className="mt-3 space-y-2">
@@ -106,6 +142,7 @@ export default function AIStylistPage() {
   const [consultData, setConsultData] = useState<ConsultData | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
   const [latestAiImage, setLatestAiImage] = useState<string | null>(null);
   const [chatHistory, setChatHistory] = useState<{ role: string; content: string }[]>([]);
   const [userProfile, setUserProfile] = useState<Record<string, unknown>>({});
@@ -122,6 +159,10 @@ export default function AIStylistPage() {
       try {
         const data: ConsultData = JSON.parse(stored);
         setConsultData(data);
+        console.log("[AI Stylist] simulationResultId:", data.simulationResultId);
+
+        const greetingName = data.styleName ? `'${data.styleName}' 스타일` : "선택하신 스타일";
+        const greeting = `${greetingName}에 대해 맞춤형 스타일링 상담을 도와드리겠습니다.`;
 
         if (data.selectedImage) {
           initialMsgCount.current = 2;
@@ -129,21 +170,14 @@ export default function AIStylistPage() {
           timer = setTimeout(() => {
             setMessages((prev) => [
               ...prev,
-              {
-                role: "assistant",
-                content: "분석 결과를 바탕으로 맞춤형 스타일링 추천을 도와드리겠습니다.",
-              },
+              { role: "assistant", content: greeting },
             ]);
           }, 600);
         } else {
           initialMsgCount.current = 1;
-          setMessages([
-            {
-              role: "assistant",
-              content: "분석 결과를 바탕으로 맞춤형 스타일링 추천을 도와드리겠습니다.",
-            },
-          ]);
+          setMessages([{ role: "assistant", content: greeting }]);
         }
+
       } catch {}
     } else {
       initialMsgCount.current = 1;
@@ -174,45 +208,80 @@ export default function AIStylistPage() {
     }
   }, [messages]);
 
+  useEffect(() => {
+    if (!isTyping) return;
+    const container = messagesContainerRef.current;
+    if (container) {
+      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+    }
+  }, [isTyping]);
+
   /* ── 백엔드 호출 공통 함수 ── */
   const callChatApi = async (
     message: string,
     selectedOption?: { type: string; id: string }
   ): Promise<ApiResponse> => {
-    const analysisRaw = localStorage.getItem("styleflow_analysis_result");
-    const analysisResult = analysisRaw ? JSON.parse(analysisRaw) : null;
-
-    const previousAnalysis = analysisResult
-      ? [analysisResult.hair_analysis_summary, analysisResult.makeup_analysis_summary]
-          .filter(Boolean)
-          .join("\n")
+    const previousAnalysis = consultData
+      ? [consultData.hairSummary, consultData.makeupSummary].filter(Boolean).join("\n")
       : null;
+
+    const previousRecommendations = [
+      ...(consultData?.hairMappings ?? []).map((m) => ({
+        category: "hair",
+        style_name: m.style_name,
+      })),
+      ...(consultData?.makeupMappings ?? []).map((m) => ({
+        category: "makeup",
+        style_name: m.style_name,
+      })),
+    ];
 
     const res = await api.post("/ai-chat/", {
       message,
-      face_shape: analysisResult?.face_shape ?? "round",
-      personal_color: analysisResult?.personal_color ?? "봄 웜톤",
+      face_shape: consultData?.faceShape ?? "둥근형",
+      personal_color: consultData?.personalColor ?? "봄웜",
       previous_analysis: previousAnalysis,
+      previous_recommendations: previousRecommendations,
       chat_history: chatHistory,
       user_profile: userProfile,
+      sim_image_url: consultData?.selectedImage ?? null,
       ...(selectedOption ? { selected_option: selectedOption } : {}),
     });
 
     return res.data as ApiResponse;
   };
 
-  /* ── API 응답을 채팅창에 반영 ── */
-  const applyApiResponse = (data: ApiResponse) => {
+  /* ── API 응답을 채팅창에 반영 + user_feedback 저장 ── */
+  const applyApiResponse = (data: ApiResponse, userMessage: string) => {
     setChatHistory(data.updated_chat_history ?? []);
     setUserProfile(data.updated_user_profile ?? {});
 
+    const retouchedUrl = data.retouched_image_url ?? null;
+    if (retouchedUrl) {
+      setLatestAiImage(retouchedUrl);
+    }
+
+    const targetType = (consultData?.style?.split(",")[0] ?? "makeup") as "hair" | "makeup";
+    const mappings = targetType === "hair" ? consultData?.hairMappings : consultData?.makeupMappings;
+    const appliedStyleKey = mappings?.[0]?.style_code ?? null;
+    api.post("/feedback/chat/", {
+      user_chat: userMessage,
+      ai_chat: data.reply,
+      target_type: targetType,
+      simulation_result_id: consultData?.simulationResultId ?? null,
+      applied_style_key: appliedStyleKey,
+      ...(retouchedUrl ? { img_url: retouchedUrl } : {}),
+    }).catch((e) => console.error("[AI Stylist] feedback 저장 실패:", e?.response?.data ?? e));
+
     setTimeout(() => {
+      setIsTyping(false);
       const hasSelection = !!data.selection?.options?.length;
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
           content: data.reply,
+          ...(retouchedUrl ? { image: retouchedUrl, retouched: true } : {}),
           ...(hasSelection ? { selection: data.selection! } : {}),
         },
       ]);
@@ -221,17 +290,20 @@ export default function AIStylistPage() {
 
   /* ── 메시지 전송 ── */
   const handleSend = async (content: string) => {
-    if (!content.trim()) return;
+    if (!content.trim() || isTyping) return;
     setMessages((prev) => [...prev, { role: "user", content }]);
     setInputValue("");
+    setIsTyping(true);
 
     try {
       const data = await callChatApi(content);
-      applyApiResponse(data);
-    } catch {
+      applyApiResponse(data, content);
+    } catch (err) {
+      console.error("[AI Stylist] ai-chat API 실패 (폴백 응답):", err);
       const fallback = FALLBACK_TEXTS[fallbackCursor % FALLBACK_TEXTS.length];
       fallbackCursor++;
       setTimeout(() => {
+        setIsTyping(false);
         setMessages((prev) => [...prev, { role: "assistant", content: fallback }]);
       }, 800);
     }
@@ -239,21 +311,29 @@ export default function AIStylistPage() {
 
   /* ── 선택 버튼 클릭 처리 ── */
   const handleSelectOption = async (selection: Selection, option: SelectionOption) => {
+    if (isTyping) return;
     setMessages((prev) => [...prev, { role: "user", content: option.label }]);
+    setIsTyping(true);
 
     try {
       const data = await callChatApi(option.label, {
         type: selection.type,
         id: option.id,
       });
-      applyApiResponse(data);
+      applyApiResponse(data, option.label);
     } catch {
       const fallback = FALLBACK_TEXTS[fallbackCursor % FALLBACK_TEXTS.length];
       fallbackCursor++;
       setTimeout(() => {
+        setIsTyping(false);
         setMessages((prev) => [...prev, { role: "assistant", content: fallback }]);
       }, 800);
     }
+  };
+
+  /* ── 리터칭 이미지 클릭 시 선택 이미지 교체 ── */
+  const handleApplyRetouched = (imageUrl: string) => {
+    setLatestAiImage(imageUrl);
   };
 
   /* ── 돌아가기 ── */
@@ -361,9 +441,14 @@ export default function AIStylistPage() {
                       msg.role === "user" ? "justify-end" : "justify-start"
                     }`}
                   >
-                    <Bubble msg={msg} onSelectOption={handleSelectOption} />
+                    <Bubble msg={msg} onSelectOption={handleSelectOption} onApplyRetouched={handleApplyRetouched} />
                   </div>
                 ))}
+                {isTyping && (
+                  <div className="flex justify-start">
+                    <TypingIndicator />
+                  </div>
+                )}
               </div>
 
               <div className="border-t border-gray-200 p-6 flex-shrink-0">
@@ -379,10 +464,12 @@ export default function AIStylistPage() {
                     }}
                     placeholder="원하는 스타일 변경을 입력하세요..."
                     className="flex-1"
+                    disabled={isTyping}
                   />
                   <Button
                     onClick={() => handleSend(inputValue)}
                     className="bg-black text-white hover:bg-gray-800"
+                    disabled={isTyping}
                   >
                     <Send className="w-4 h-4" />
                   </Button>

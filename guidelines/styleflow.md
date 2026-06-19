@@ -545,3 +545,279 @@ fetch("http://localhost:8000/api/simulate/makeup/", { headers: { Authorization: 
 2. 갱신 성공 → 원래 요청 재시도
 3. 갱신 실패 → `clearAuth()` + `/login` 리다이렉트
 4. `_retry` 플래그로 무한 루프 방지
+
+---
+
+### [2026-06-18] RAG 메이크업 필터 수정 + DB style_code 추가 + 피드백 저장 개선
+
+#### ① 메이크업 RAG 결과가 항상 비어 있던 문제
+
+**원인:** `views.py`에서 ChromaDB로 넘기는 필터 값 4개가 모두 실제 메타데이터와 불일치했음.
+
+| 필터 필드 | 기존 (잘못된 값) | 수정 후 (ChromaDB 실제 값) |
+|-----------|-----------------|--------------------------|
+| `gender` | `'female'` (영문) | `'여성'` (한국어) |
+| `face_shape` | `'round'` (영문) | `'둥근형'` (한국어) |
+| `personal_color` | `'spring'` (영문) | `'봄웜'` (한국어) |
+| `face_proportion` | `'golden'` (영문) | `'균형'` (한국어) |
+
+**해결:** `views.py`에 4개 매핑 딕셔너리 추가, `analyze` 뷰에서 변환 후 RAG에 전달.
+
+```python
+_FACE_PROPORTION_MAP = {'upper': '상안부_긴형', 'middle': '중안부_긴형', 'lower': '하안부_긴형', 'golden': '균형'}
+_PERSONAL_COLOR_MAP  = {'spring': '봄웜', 'summer': '여름쿨', 'fall': '가을웜', 'winter': '겨울쿨'}
+_GENDER_MAP          = {'female': '여성', 'male': '남성'}
+_FACE_SHAPE_MAP      = {'round': '둥근형', 'oval': '계란형', 'square': '각진형', 'heart': '역삼각형', 'long': '장방형'}
+```
+
+---
+
+#### ② `MakeupStyle` 모델에 `style_code` 필드 추가
+
+**배경:** RAG의 `_result_contains_style()`이 `style_code` 우선으로 매칭하도록 설계되어 있어, DB에도 코드가 있어야 정확한 추적이 가능함.
+
+**마이그레이션 순서:**
+
+| 파일 | 내용 |
+|------|------|
+| `0004_makupstyle_style_code.py` | `MakeupStyle`에 `style_code CharField(max_length=20, null=True, unique=True)` 추가 |
+| `0005_makeup_styles_seed.py` | 16개 스타일 코드 시드 (`get_or_create` 사용) |
+| `0006_makeup_styles_dedup.py` | 시드 시 발생한 중복 row 정리 (style_code=None 인 기존 row에 코드 채움) |
+
+**주의:** `0005`에서 `get_or_create(style_code=item['style_code'])`를 쓰면 기존 row(style_code=None)는 갱신되지 않고 새 row가 생겨 32개로 중복됨 → `0006`에서 style_code가 있는 새 row를 삭제하고 기존 row를 `style_name` 기준으로 UPDATE.
+
+**16개 스타일 코드 매핑:**
+
+| style_name | style_code |
+|------------|------------|
+| 코랄 메이크업 | mk-sp-coral |
+| 피치 메이크업 | mk-sp-peach |
+| 주시 메이크업 | mk-sp-juicy |
+| 듀이 메이크업 | mk-su-dewy |
+| 내추럴 메이크업 | mk-su-natural |
+| 로즈 메이크업 | mk-su-rose |
+| 브라운 메이크업 | mk-au-brown |
+| 시크 메이크업 | mk-au-chic |
+| 오피스 메이크업 | mk-au-office |
+| 버건디 메이크업 | mk-wi-burgundy |
+| 글램 메이크업 | mk-wi-glam |
+| 레드 메이크업 | mk-wi-red |
+| 봄웜 내추럴 메이크업 | mk-m-sp-natural |
+| 여름쿨 클린 메이크업 | mk-m-su-clean |
+| 가을웜 소프트 메이크업 | mk-m-au-soft |
+| 겨울쿨 샤프 메이크업 | mk-m-wi-sharp |
+
+---
+
+#### ③ `user_feedback.applied_style_key` 저장 구현
+
+**목적:** 유저가 AI 상담 시 어떤 스타일(헤어/메이크업)에 대해 상담했는지 스타일 코드로 추적.
+
+**데이터 흐름:**
+
+```
+[analyze API 응답]
+    makeup_mappings: [{ id, style_name, style_code, image_url }]  ← style_code 추가
+    hair_mappings:   [{ id, style_name, style_code, image_url }]  ← 기존부터 있었음
+
+[simulation-flow/page.tsx - handleConsult()]
+    styleflow_consultation에 hairMappings, makeupMappings (style_code 포함) 저장
+
+[ai-stylist/page.tsx - applyApiResponse()]
+    target_type에 따라 hairMappings[0] 또는 makeupMappings[0]의 style_code 추출
+    → POST /feedback/chat/ 에 applied_style_key로 전송
+
+[feedback_chat view]
+    applied_style_key → UserFeedback.applied_style_key 저장
+```
+
+**수정 파일:**
+- `backend/app/core/views.py` — `analyze` 뷰의 `makeup_mappings`에 `style_code` 포함, `feedback_chat` 뷰에서 `applied_style_key` 읽어 저장
+- `frontend/app/simulation-flow/page.tsx` — `analysisResult` 타입에 `style_code?: string` 추가
+- `frontend/app/ai-stylist/page.tsx` — `ConsultData` 타입 업데이트, `applyApiResponse`에서 `applied_style_key` 추출 후 전송
+
+---
+
+#### ④ `simulation-complete` 페이지 — SimulationResult 자동 생성 + 저장 분리
+
+**문제:** "결과 저장" 버튼을 누르기 전 "AI 상담하기"를 누르면 `simulation_result_id`가 null이어서 피드백과 시뮬레이션 결과 간 연결이 끊어짐.
+
+**해결 (Option A — 페이지 마운트 시 자동 기록):**
+
+```
+simulation-complete 페이지 마운트
+    ↓
+POST /api/simulate/save/ (is_saved=false)   ← 자동 호출
+    → SimulationResult 생성 (마이홈 미노출)
+    → savedSimResultId 상태에 저장
+
+"결과 저장" 클릭
+    → PATCH /api/simulate/save/{id}/
+    → is_saved=True로 업데이트 → 마이홈에 노출
+    → 버튼 "저장됨"으로 변경 + 비활성화
+
+"AI 상담하기" 클릭
+    → simulation_result_id = 항상 유효한 값 보장
+```
+
+**수정 내용:**
+
+- `backend/app/core/views.py`
+  - `simulate_save`: `is_saved` 파라미터 추가 (기본 `false`, `'false'`·`'0'`·`''` → False 처리)
+  - `simulate_save_mark` 뷰 신규 추가 — PATCH로 `is_saved=True` 업데이트, 본인 소유 레코드만 허용
+
+- `backend/app/core/urls.py`
+  - `path('simulate/save/<int:pk>/', simulate_save_mark)` 추가
+
+- `frontend/app/simulation-complete/page.tsx`
+  - `autoSaveCalledRef`로 마운트 시 1회만 자동 POST 실행 (React StrictMode 이중 호출 방지)
+  - `isSaved` 상태로 중복 저장 방지 및 버튼 UI 전환
+  - `handleSave` → PATCH로 변경 (이미지 재전송 불필요)
+
+---
+
+### [2026-06-18] Gemini 이미지 생성형 수정 기능 추가 (rag-3 브랜치)
+
+> Merge `main` → `rag-2` 이후 작업
+
+#### ① 채팅으로 이미지 수정 요청 시 Gemini Vision으로 이미지 편집
+
+**목적:** 유저가 채팅에서 "립 컬러를 코랄로 바꿔줘" 같이 이미지 수정을 요청하면 GAN 재처리 없이 Gemini imagen API로 즉시 편집 결과를 반환.
+
+**처리 흐름:**
+
+```
+유저 채팅 입력 (이미지 수정 요청)
+    ↓
+LangGraph: INTENT_RETOUCH → analyze_retouch_request
+    ↓
+retouch_nodes.py: _download_image() — Django media 경로 or HTTP로 원본 이미지 바이트 취득
+    ↓
+_build_retouch_prompt() — target/requested_change → 자연어 프롬프트 생성
+    ↓
+google-genai SDK: Gemini imagen 모델 호출 (이미지 + 텍스트 → 편집 이미지)
+    ↓
+결과 이미지 → media/simulations/ 저장 → URL 반환
+    ↓
+프론트엔드: retouched_image_url → 채팅창에 리터칭 이미지 말풍선 표시
+```
+
+**수정 파일:**
+- `backend/app/rag/chatbot_rag/retouch_nodes.py` — `_download_image()`, `_build_retouch_prompt()`, Gemini 호출 로직 추가
+- `backend/app/rag/rag_core/config.py` — `GEMINI_API_KEY`, `GEMINI_IMAGE_MODEL` 상수 추가
+- `backend/app/core/views.py` — `retouched_image_url` 응답 필드 반환
+
+**로컬 이미지 경로 최적화:**
+```python
+# HTTP 라운드트립 없이 Django media 파일 직접 읽기
+if url.startswith(media_url):
+    local_path = os.path.join(media_root, url[len(media_url):])
+# http://localhost:8000/media/... 형태도 처리
+for host in ("http://127.0.0.1:8000", "http://localhost:8000", ...):
+    if url.startswith(host + media_url):
+        local_path = ...
+```
+
+---
+
+#### ② LangGraph 라우팅 분기 수정 — 이미지 수정 확인 흐름 버그 수정
+
+**문제:** `PENDING_RETOUCH_CONFIRMATION` 조건에 `and selected_option` 가드가 있어 유저가 확인 버튼을 누르지 않으면 라우팅이 빠져나가지 못하는 버그.
+
+**해결:** 조건에서 `selected_option` 가드 제거.
+
+```python
+# 수정 전
+if pending == PENDING_RETOUCH_CONFIRMATION and selected_option:
+    return "handle_retouch_confirmation"
+
+# 수정 후
+if pending == PENDING_RETOUCH_CONFIRMATION:
+    return "handle_retouch_confirmation"
+```
+
+---
+
+#### ③ 새 인텐트 노드 추가 — 대화 기억 조회 / 후속 추천
+
+**추가된 인텐트:**
+
+| 인텐트 상수 | 설명 | 라우팅 노드 |
+|-------------|------|-------------|
+| `INTENT_MEMORY_RECALL` | "아까 추천해준 스타일이 뭐야?" 등 이전 대화 참조 | `answer_memory_recall` |
+| `INTENT_FOLLOWUP_RECOMMENDATION` | 추천 후 추가 질문 (다른 옵션, 이유 설명 등) | `answer_followup_recommendation` |
+
+**라우팅 우선순위 (route_after_intent):**
+```
+INTENT_MEMORY_RECALL (최우선)
+    → answer_memory_recall
+
+INTENT_RETOUCH
+    → analyze_retouch_request
+
+INTENT_FOLLOWUP_RECOMMENDATION (needs_clarification보다 먼저)
+    → answer_followup_recommendation
+
+...이하 기존 순서
+```
+
+**수정 파일:**
+- `backend/app/rag/chatbot_rag/graph.py` — 노드 등록 + 라우팅 분기 추가
+- `backend/app/rag/chatbot_rag/intents.py` — 상수 추가
+- `backend/app/rag/chatbot_rag/intent_keywords.py` — 키워드 확장
+- `backend/app/rag/chatbot_rag/intent_classifier.py` — 분류 로직 수정
+- `backend/app/rag/chatbot_rag/nodes.py` — `answer_followup_recommendation`, `answer_memory_recall` 노드 구현
+- `backend/app/rag/chatbot_rag/memory.py` — 대화 기억 참조 로직 추가
+
+---
+
+#### ④ `sentence-transformers` 버전 충돌 수정
+
+**문제:** `sentence-transformers==5.6.0`이 `huggingface-hub>=1.0` 런타임 체크를 수행하는데, 현재 환경의 `huggingface-hub` 버전과 충돌하여 임포트 오류 발생.
+
+**해결:** 버전 다운그레이드 + 관련 패키지 고정.
+
+```
+# requirements.txt 변경
+sentence-transformers: 5.6.0 → 3.0.1
+transformers: 4.44.2  (신규 고정)
+tokenizers: 0.19.1    (신규 고정)
+```
+
+**추가 수동 조치 필요 (설치 후 1회):**
+`transformers==4.44.2`가 `huggingface-hub` 버전을 런타임에 체크하므로 아래 파일에서 해당 항목을 수동 제거해야 함:
+```
+anaconda3/envs/p310_pj_styleflow/Lib/site-packages/transformers/dependency_versions_check.py
+→ pkgs_to_check_at_runtime 리스트에서 "huggingface-hub" 줄 삭제
+```
+
+---
+
+### [2026-06-19] AI 채팅 응답 대기 중 타이핑 인디케이터 애니메이션 추가
+
+**문제:** 유저가 메시지를 전송한 후 AI 응답이 생성되는 동안 (API 호출 + 800ms 딜레이) 채팅창에 아무런 피드백이 없어 응답이 오고 있는지 알 수 없는 UX 문제.
+
+**해결:** 세 개의 점이 순차적으로 bouncing하는 타이핑 인디케이터를 AI 말풍선 자리에 표시.
+
+**변경 파일:** `frontend/app/ai-stylist/page.tsx` (프론트엔드만 수정, 백엔드 변경 없음)
+
+**구현 내용:**
+
+| 항목 | 내용 |
+|------|------|
+| `TypingIndicator` 컴포넌트 | 회색 말풍선 + 세 점 `animate-bounce` (Tailwind, animation-delay로 순차 처리) |
+| `isTyping` state | API 호출 시작~응답 표시 직전 구간을 추적 |
+| 중복 전송 방지 | `handleSend`, `handleSelectOption` 진입 시 `isTyping`이면 즉시 return |
+| 입력 비활성화 | `isTyping` 중 Input, 전송 버튼 `disabled` |
+| 스크롤 연동 | `isTyping=true` 시 채팅 컨테이너 하단으로 자동 스크롤 |
+
+**타이밍:**
+```
+유저 전송
+  → setIsTyping(true)   ← 인디케이터 표시
+  → API 호출 (수 초)
+  → 응답 수신 → 800ms delay
+  → setIsTyping(false) + setMessages(...)  ← 인디케이터 → AI 말풍선으로 교체
+```
+
+에러/폴백 경로에서도 동일하게 800ms 후 `setIsTyping(false)` 처리하여 인디케이터가 남지 않도록 함.

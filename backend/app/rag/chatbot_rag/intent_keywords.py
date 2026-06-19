@@ -4,15 +4,18 @@ from backend.app.rag.chatbot_rag.intents import (
     CATEGORY_HAIR,
     CATEGORY_MAKEUP,
     INTENT_COMPARISON,
+    INTENT_FOLLOWUP_RECOMMENDATION,
     INTENT_GREETING,
     INTENT_IRRELEVANT,
     INTENT_MAINTENANCE,
+    INTENT_MEMORY_RECALL,
     INTENT_MOOD_SELECTION,
     INTENT_NOISE,
     INTENT_OUTFIT_EVENT_COORDINATION,
     INTENT_OUTFIT_FIT_CHECK,
     INTENT_OUTFIT_RECOMMENDATION,
     INTENT_SMALLTALK,
+    INTENT_STYLE_RETOUCH,
     INTENT_STYLE_EXPLANATION,
     INTENT_STYLE_FIT,
     INTENT_STYLING_METHOD,
@@ -532,6 +535,163 @@ OUTFIT_EVENT_KEYWORDS = [
     "행사",
 ]
 
+# ---------------------------------------------------------------------------
+# retouch — GAN 합성 이미지 직접 편집 요청 감지
+# ---------------------------------------------------------------------------
+
+# 이미지를 명시적으로 지칭하는 표현
+RETOUCH_EXPLICIT_KEYWORDS = [
+    "리터치",
+    "리터치해줘",
+    "리터칭",
+    "보정해줘",
+    "보정해 줘",
+    "적용해줘",
+    "적용해 줘",
+    "합성해줘",
+    "합성해 줘",
+    "예쁘게 바꿔줘",
+    "예쁘게 바꿔 줘",
+    "좀 수정해줘",
+    "좀 수정해 줘",
+    "메이크업 바꿔줘",
+    "메이크업 바꿔 줘",
+    "머리 바꿔줘",
+    "머리 바꿔 줘",
+    "자연스럽게 해줘",
+    "자연스럽게 해 줘",
+    "이 이미지",
+    "이 사진",
+    "이 합성",
+    "합성 이미지",
+    "시뮬레이션 이미지",
+    "시뮬레이션 사진",
+    "이미지를 바꿔",
+    "이미지 바꿔",
+    "사진을 바꿔",
+    "사진 바꿔",
+    "이미지 수정",
+    "사진 수정",
+    # 욕구형 표현 — "수정하고 싶어" 등
+    "수정하고 싶어",
+    "수정하고 싶",
+    "바꾸고 싶어",
+    "바꾸고 싶",
+    "고치고 싶어",
+    "고치고 싶",
+    "조정하고 싶어",
+    "조정하고 싶",
+    "보정하고 싶어",
+    "보정하고 싶",
+    "적용하고 싶어",
+    "합성하고 싶어",
+]
+
+# 직접 수정 요청 동사
+RETOUCH_EDIT_VERBS = [
+    "바꿔줘",
+    "바꿔 줘",
+    "수정해줘",
+    "수정해 줘",
+    "변경해줘",
+    "변경해 줘",
+    "고쳐줘",
+    "고쳐 줘",
+    "적용해줘",
+    "적용해 줘",
+    "합성해줘",
+    "합성해 줘",
+    "보정해줘",
+    "보정해 줘",
+]
+
+RETOUCH_STYLE_TARGET_PHRASES = [
+    "이 헤어로 바꿔",
+    "이 메이크업으로 바꿔",
+    "앞머리만 바꿔",
+    "립을 더 진하게",
+    "립 더 진하게",
+    "피부톤을 자연스럽게",
+    "피부톤 자연스럽게",
+    "선택한",
+    "추천받은",
+    "추천된",
+]
+
+# 이미지/사진 또는 뷰티 부위 명사 (동사와 조합 시 retouch로 판별)
+RETOUCH_IMAGE_NOUNS = [
+    "이미지",
+    "사진",
+    "합성",
+    "시뮬레이션",
+    # 뷰티 부위 명사
+    "헤어",
+    "머리",
+    "앞머리",
+    "메이크업",
+    "화장",
+    "립",
+    "눈",
+    "피부톤",
+]
+
+
+_MEMORY_RECALL_PHRASES = [
+    "방금 뭐라고 했지",
+    "방금 뭐라고 했어",
+    "아까 내가 뭐라고",
+    "내가 방금 뭐라고",
+    "방금 한 말",
+    "아까 한 말",
+    "내가 직전에 뭐라고",
+    "전에 뭐라고 했지",
+    "방금 말한 게",
+    "방금 말한 거",
+    "방금 한 게",
+]
+
+
+def is_memory_recall(message: str) -> bool:
+    msg = message.strip().lower()
+    return any(phrase in msg for phrase in _MEMORY_RECALL_PHRASES)
+
+
+_FOLLOWUP_RECOMMENDATION_PHRASES = [
+    "다른 메이크업",
+    "다른 헤어",
+    "다른 스타일",
+    "다른 건",
+    "다른 거",
+    "다른 것도",
+    "또 뭐 있어",
+    "또 추천",
+    "다른 추천",
+    "다른 것도 추천",
+    "그럼 다른",
+    "또 다른",
+]
+
+
+def is_followup_recommendation(message: str) -> bool:
+    msg = message.strip().lower()
+    return any(phrase in msg for phrase in _FOLLOWUP_RECOMMENDATION_PHRASES)
+
+
+def is_retouch_request(message: str) -> bool:
+    """
+    GAN 합성 이미지에 대한 직접 편집/수정 요청인지 판별한다.
+    classify_intent 노드에서 sim_image_url 존재 여부와 함께 확인한다.
+    """
+    msg = message.strip().lower()
+    if any(kw in msg for kw in RETOUCH_EXPLICIT_KEYWORDS):
+        return True
+    if any(phrase in msg for phrase in RETOUCH_STYLE_TARGET_PHRASES):
+        return any(v in msg for v in RETOUCH_EDIT_VERBS) or any(v in msg for v in ["해줘", "해 줘"])
+    has_verb = any(v in msg for v in RETOUCH_EDIT_VERBS)
+    has_noun = any(n in msg for n in RETOUCH_IMAGE_NOUNS)
+    return has_verb and has_noun
+
+
 _GREETING_STRIP_CHARS = "!?~ㅎㅋ\t\n "
 _GREETING_SET = {kw.lower() for kw in GREETING_KEYWORDS}
 
@@ -638,9 +798,20 @@ def get_intent_by_keyword(message: str) -> str:
     if normalized_message in SMALLTALK_KEYWORDS:
         return INTENT_SMALLTALK
 
+    # 대화 기억 질문 — 다른 intent보다 우선
+    if is_memory_recall(normalized_message):
+        return INTENT_MEMORY_RECALL
+
     # 명확한 비교 구조는 maintenance/styling 키워드보다 우선한다.
     if _has_explicit_comparison(normalized_message):
         return INTENT_COMPARISON
+
+    if is_retouch_request(normalized_message):
+        return INTENT_STYLE_RETOUCH
+
+    # 후속 추천 질문
+    if is_followup_recommendation(normalized_message):
+        return INTENT_FOLLOWUP_RECOMMENDATION
 
     # outfit 키워드가 명시적으로 있으면 mood_selection보다 먼저 잡는다.
     if _is_outfit_request(normalized_message):

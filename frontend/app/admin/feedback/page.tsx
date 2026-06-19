@@ -9,14 +9,15 @@ type Feedback = {
   id: number;
   user_nickname: string;
   target_type: 'hair' | 'makeup';
-  feedback_text: string | null;
-  applied_style_key: string | null;
+  user_chat: string | null;
+  ai_chat: string | null;
+  simulation_result: number | null;
   created_at: string;
 };
 
 function FeedbackTable({ items }: { items: Feedback[] }) {
   if (items.length === 0) {
-    return <p className="text-sm text-gray-400 py-6 text-center">피드백이 없습니다.</p>;
+    return <p className="text-sm text-gray-400 py-6 text-center">채팅 기록이 없습니다.</p>;
   }
 
   return (
@@ -27,8 +28,9 @@ function FeedbackTable({ items }: { items: Feedback[] }) {
             <th className="text-left px-4 py-3 font-medium w-12">ID</th>
             <th className="text-left px-4 py-3 font-medium w-28">유저</th>
             <th className="text-left px-4 py-3 font-medium w-24">타입</th>
-            <th className="text-left px-4 py-3 font-medium">피드백 내용</th>
-            <th className="text-left px-4 py-3 font-medium w-32">적용 스타일</th>
+            <th className="text-left px-4 py-3 font-medium">유저 메시지</th>
+            <th className="text-left px-4 py-3 font-medium">AI 응답</th>
+            <th className="text-left px-4 py-3 font-medium w-20">결과ID</th>
             <th className="text-left px-4 py-3 font-medium w-28">날짜</th>
           </tr>
         </thead>
@@ -42,8 +44,9 @@ function FeedbackTable({ items }: { items: Feedback[] }) {
                   {f.target_type === 'hair' ? '헤어' : '메이크업'}
                 </span>
               </td>
-              <td className="px-4 py-3 text-gray-600 max-w-xs">{f.feedback_text ?? '-'}</td>
-              <td className="px-4 py-3 text-gray-500">{f.applied_style_key ?? '-'}</td>
+              <td className="px-4 py-3 text-gray-600 max-w-xs truncate">{f.user_chat ?? '-'}</td>
+              <td className="px-4 py-3 text-gray-600 max-w-xs truncate">{f.ai_chat ?? '-'}</td>
+              <td className="px-4 py-3 text-gray-500">{f.simulation_result ?? '-'}</td>
               <td className="px-4 py-3 text-gray-500">{f.created_at.slice(0, 10)}</td>
             </tr>
           ))}

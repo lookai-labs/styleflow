@@ -54,6 +54,11 @@ GEMINI_CHAT_MODEL = os.getenv(
     "gemini-2.5-flash",
 )
 
+GEMINI_IMAGE_MODEL = os.getenv(
+    "GEMINI_IMAGE_MODEL",
+    "gemini-2.0-flash-exp",
+)
+
 
 # =========================
 # Retrieval 기본값

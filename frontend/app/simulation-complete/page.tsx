@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -22,12 +22,16 @@ type FinalResult = {
   completedStyles: string[];
   afterImage: string;
   beforeImage: string;
+  styleNames?: Partial<Record<string, string>>;
 };
 
 export default function SimulationCompletePage() {
   const router = useRouter();
   const authorized = useRequireAuth();
   const [finalResult, setFinalResult] = useState<FinalResult | null>(null);
+  const [savedSimResultId, setSavedSimResultId] = useState<number | null>(null);
+  const [isSaved, setIsSaved] = useState(false);
+  const autoSaveCalledRef = useRef(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("styleflow_final_result");
@@ -38,48 +42,80 @@ export default function SimulationCompletePage() {
     }
   }, []);
 
+  /* ── finalResult 로드 직후 SimulationResult 자동 생성 (is_saved=false) ── */
+  useEffect(() => {
+    if (!finalResult || autoSaveCalledRef.current) return;
+    autoSaveCalledRef.current = true;
+
+    const afFilename = (finalResult.afterImage ?? '').split('/').pop() ?? '';
+    const faceDataUrl = finalResult.beforeImage?.startsWith('data:')
+      ? finalResult.beforeImage
+      : localStorage.getItem('styleflow_face_image') ?? '';
+
+    if (!faceDataUrl || !afFilename || !faceDataUrl.startsWith('data:')) return;
+
+    const [header, base64] = faceDataUrl.split(',');
+    const mime = header.match(/:(.*?);/)?.[1] ?? 'image/jpeg';
+    const binary = atob(base64);
+    const arr = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
+    const blob = new Blob([arr], { type: mime });
+
+    const formData = new FormData();
+    formData.append('face_image', new File([blob], 'face.jpg', { type: mime }));
+    formData.append('after_image_filename', afFilename);
+    formData.append('is_saved', 'false');
+    if (finalResult.completedStyles.includes('makeup'))
+      formData.append('makeup_name', finalResult.styleNames?.['makeup'] ?? '');
+    if (finalResult.completedStyles.includes('hair'))
+      formData.append('hair_name', finalResult.styleNames?.['hair'] ?? '');
+
+    api.post('/simulate/save/', formData)
+      .then((res) => setSavedSimResultId(res.data.id ?? null))
+      .catch((e) => console.error('[simulation-complete] 자동 기록 실패:', e));
+  }, [finalResult]);
+
   const completedSteps = finalResult?.completedStyles ?? ["makeup", "hair"];
   const beforeImage    = finalResult?.beforeImage ?? FALLBACK_BEFORE;
   const afterImage     = finalResult?.afterImage  ?? FALLBACK_AFTER;
 
   const handleAIConsult = () => {
+    let analysisData: Record<string, unknown> | null = null;
+    try {
+      const ar = localStorage.getItem("styleflow_analysis_result");
+      if (ar) analysisData = JSON.parse(ar);
+    } catch {}
+
     const consultData = {
       selectedId: "simulation-complete",
       selectedImage: afterImage,
-      style: completedSteps.join(","),
+      style: completedSteps[0] ?? "makeup",
       allStyles: completedSteps.join(","),
       currentStyleIndex: 0,
+      simulationResultId: savedSimResultId,
+      hairMappings: analysisData?.hair_mappings ?? [],
+      makeupMappings: analysisData?.makeup_mappings ?? [],
+      faceShape: analysisData?.face_shape ?? null,
+      personalColor: analysisData?.personal_color ?? null,
+      hairSummary: analysisData?.hair_analysis_summary ?? null,
+      makeupSummary: analysisData?.makeup_analysis_summary ?? null,
     };
     localStorage.setItem("styleflow_consultation", JSON.stringify(consultData));
     router.push("/ai-stylist");
   };
 
   const handleSave = async () => {
+    if (isSaved) {
+      toast.info('이미 저장되었습니다.');
+      return;
+    }
+    if (!savedSimResultId) {
+      toast.error('저장 준비 중입니다. 잠시 후 다시 시도해 주세요.');
+      return;
+    }
     try {
-      const afterFilename = afterImage.split('/').pop() ?? '';
-      const faceDataUrl = beforeImage.startsWith('data:')
-        ? beforeImage
-        : localStorage.getItem('styleflow_face_image') ?? '';
-
-      if (!faceDataUrl || !afterFilename) {
-        toast.error('저장에 필요한 이미지가 없습니다.');
-        return;
-      }
-
-      const [header, base64] = faceDataUrl.split(',');
-      const mime = header.match(/:(.*?);/)?.[1] ?? 'image/jpeg';
-      const binary = atob(base64);
-      const arr = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
-      const blob = new Blob([arr], { type: mime });
-
-      const formData = new FormData();
-      formData.append('face_image', new File([blob], 'face.jpg', { type: mime }));
-      formData.append('after_image_filename', afterFilename);
-      if (completedSteps.includes('makeup')) formData.append('makeup_name', '웜 코랄 메이크업');
-      if (completedSteps.includes('hair'))   formData.append('hair_name', '레이어드 웨이브');
-
-      await api.post('/simulate/save/', formData);
+      await api.patch(`/simulate/save/${savedSimResultId}/`);
+      setIsSaved(true);
       toast.success('마이홈에 저장되었습니다');
     } catch {
       toast.error('저장에 실패했습니다. 다시 시도해 주세요.');
@@ -115,7 +151,10 @@ export default function SimulationCompletePage() {
                 <div key={idx} className="flex items-center gap-2">
                   <div className="flex items-center gap-2 bg-gray-100 px-4 py-2 rounded-full">
                     <Check className="w-4 h-4 text-green-600" />
-                    <span className="text-sm">{STYLE_LABEL[step] ?? step}</span>
+                    <span className="text-sm">
+                      {STYLE_LABEL[step] ?? step}
+                      {finalResult?.styleNames?.[step] && ` · ${finalResult.styleNames[step]}`}
+                    </span>
                   </div>
                   {idx < completedSteps.length - 1 && <span className="text-gray-400">→</span>}
                 </div>
@@ -126,8 +165,13 @@ export default function SimulationCompletePage() {
 
         <div className="space-y-4">
           <div className="grid md:grid-cols-2 gap-4">
-            <Button onClick={handleSave} className="bg-black text-white hover:bg-gray-800 py-6 text-lg">
-              <Save className="mr-2 h-5 w-5" />결과 저장
+            <Button
+              onClick={handleSave}
+              disabled={isSaved}
+              className="bg-black text-white hover:bg-gray-800 py-6 text-lg disabled:opacity-60"
+            >
+              <Save className="mr-2 h-5 w-5" />
+              {isSaved ? '저장됨' : '결과 저장'}
             </Button>
             <Button onClick={() => router.push("/my-home")} className="bg-black text-white hover:bg-gray-800 py-6 text-lg">
               <Home className="mr-2 h-5 w-5" />마이홈으로 이동

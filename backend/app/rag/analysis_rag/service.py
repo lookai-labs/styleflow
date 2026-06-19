@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from backend.app.rag.rag_core.retriever import retrieve_many_docs
@@ -10,21 +11,26 @@ from backend.app.rag.rag_core.schemas import AnalysisGenerationInput, RetrievalQ
 CATEGORY_HAIR = "hair"
 CATEGORY_MAKEUP = "makeup"
 
+logger = logging.getLogger(__name__)
 
-def _result_contains_style_code(
+
+def _result_contains_style(
     retrieval_result: RetrievalResult,
-    style_code: str,
+    *,
+    style_code: str | None = None,
+    style_name: str | None = None,
 ) -> bool:
     """
-    검색 결과 안에 요청한 style_code 문서가 실제로 포함되어 있는지 확인한다.
+    검색 결과 안에 요청한 스타일 문서가 실제로 포함되어 있는지 확인한다.
 
-    fallback 검색은 후순위 단계에서 category 같은 넓은 조건만으로도 결과를
-    반환할 수 있으므로, retrieved_count만으로는 해당 스타일의 RAG 데이터가
-    있다고 판단하기 어렵다.
+    style_code가 있으면 style_code로 매칭하고,
+    없으면 style_name으로 매칭한다 (메이크업처럼 DB에 code가 없는 경우).
     """
     for document in retrieval_result.documents:
         metadata = document.metadata or {}
-        if metadata.get("style_code") == style_code:
+        if style_code and metadata.get("style_code") == style_code:
+            return True
+        if not style_code and style_name and metadata.get("style_name") == style_name:
             return True
 
     return False
@@ -101,7 +107,10 @@ def _build_makeup_retrieval_queries(
     style_infos: list[dict[str, Any]] = []
 
     for style in recommended_makeup_styles:
-        style_name, style_code = _validate_style(style, "추천 메이크업")
+        style_name = style.get("style_name")
+        if not style_name:
+            raise ValueError("추천 메이크업에는 style_name이 필요합니다.")
+        style_code = style.get("style_code") or None  # 메이크업은 code 없어도 됨
         makeup_group = style.get("makeup_group")
 
         query = (
@@ -147,9 +156,10 @@ def _build_recommendation_results(
         (
             style_info,
             retrieval_result,
-            _result_contains_style_code(
+            _result_contains_style(
                 retrieval_result,
-                style_info["style_code"],
+                style_code=style_info.get("style_code"),
+                style_name=style_info.get("style_name"),
             ),
         )
         for style_info, retrieval_result in paired
@@ -218,7 +228,17 @@ def _generate_hair_analysis_summary(
         ],
     )
 
-    return generate_analysis_answer(generation_input).answer
+    try:
+        return generate_analysis_answer(generation_input).answer
+    except Exception as exc:
+        logger.warning("헤어 분석 생성 실패, fallback 문장 사용: %s", exc, exc_info=True)
+        style_names = ", ".join(style_info["style_name"] for style_info, _ in covered_hair_pairs)
+        return (
+            f"{face_shape} 얼굴형과 {face_proportion} 비율을 기준으로 "
+            f"{style_names} 스타일을 추천할 수 있습니다. "
+            "현재 생성형 분석 모델 연결이 불안정해, 확보된 RAG 검색 결과를 바탕으로 "
+            "보수적인 요약을 제공합니다."
+        )
 
 
 def _generate_makeup_analysis_summary(
@@ -260,7 +280,18 @@ def _generate_makeup_analysis_summary(
         ],
     )
 
-    return generate_analysis_answer(generation_input).answer
+    try:
+        return generate_analysis_answer(generation_input).answer
+    except Exception as exc:
+        logger.warning("메이크업 분석 생성 실패, fallback 문장 사용: %s", exc, exc_info=True)
+        style_names = ", ".join(style_info["style_name"] for style_info, _ in covered_makeup_pairs)
+        tone_text = personal_color or "현재 퍼스널컬러"
+        return (
+            f"{tone_text} 조건에는 {style_names} 계열처럼 피부 톤을 자연스럽게 살리는 "
+            "메이크업 방향을 우선 추천할 수 있습니다. "
+            "현재 생성형 분석 모델 연결이 불안정해, 확보된 RAG 검색 결과를 바탕으로 "
+            "보수적인 요약을 제공합니다."
+        )
 
 
 def generate_analysis_result(
@@ -307,7 +338,20 @@ def generate_analysis_result(
         )
 
     retrieval_queries = hair_queries + makeup_queries
-    retrieval_results = retrieve_many_docs(retrieval_queries)
+    try:
+        retrieval_results = retrieve_many_docs(retrieval_queries)
+    except Exception as exc:
+        logger.warning("RAG 검색 실패, 빈 검색 결과로 fallback: %s", exc, exc_info=True)
+        retrieval_results = [
+            RetrievalResult(
+                query=query.query,
+                documents=[],
+                retrieved_count=0,
+                fallback_stage="error",
+                used_filter={"error": exc.__class__.__name__},
+            )
+            for query in retrieval_queries
+        ]
 
     hair_retrieval_results = retrieval_results[: len(hair_queries)]
     makeup_retrieval_results = retrieval_results[len(hair_queries) :]

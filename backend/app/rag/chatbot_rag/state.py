@@ -97,3 +97,14 @@ class ChatbotState(TypedDict, total=False):
     image_analysis: dict[str, Any] | None
     image_visual_features: list[str]
     image_detected_style: dict[str, Any] | None
+
+    # 리터칭 관련
+    sim_image_url: str | None          # GAN 합성 결과 이미지 URL (리터칭 대상)
+    retouch_instruction: str | None    # 유저의 리터칭 지시문
+    retouch_action: str | None         # "confirm" | "cancel"
+    retouched_image_url: str | None    # 리터칭 결과 이미지 URL
+    retouch_request: dict[str, Any] | None
+    retouch_clarity: str | None        # "clear" | "ambiguous"
+    pending_retouch: dict[str, Any] | None
+    retouch_prompt_payload: dict[str, Any] | None
+    retouch_result_image_url: str | None
