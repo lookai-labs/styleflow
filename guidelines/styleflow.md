@@ -673,3 +673,151 @@ POST /api/simulate/save/ (is_saved=false)   ← 자동 호출
   - `autoSaveCalledRef`로 마운트 시 1회만 자동 POST 실행 (React StrictMode 이중 호출 방지)
   - `isSaved` 상태로 중복 저장 방지 및 버튼 UI 전환
   - `handleSave` → PATCH로 변경 (이미지 재전송 불필요)
+
+---
+
+### [2026-06-18] Gemini 이미지 생성형 수정 기능 추가 (rag-3 브랜치)
+
+> Merge `main` → `rag-2` 이후 작업
+
+#### ① 채팅으로 이미지 수정 요청 시 Gemini Vision으로 이미지 편집
+
+**목적:** 유저가 채팅에서 "립 컬러를 코랄로 바꿔줘" 같이 이미지 수정을 요청하면 GAN 재처리 없이 Gemini imagen API로 즉시 편집 결과를 반환.
+
+**처리 흐름:**
+
+```
+유저 채팅 입력 (이미지 수정 요청)
+    ↓
+LangGraph: INTENT_RETOUCH → analyze_retouch_request
+    ↓
+retouch_nodes.py: _download_image() — Django media 경로 or HTTP로 원본 이미지 바이트 취득
+    ↓
+_build_retouch_prompt() — target/requested_change → 자연어 프롬프트 생성
+    ↓
+google-genai SDK: Gemini imagen 모델 호출 (이미지 + 텍스트 → 편집 이미지)
+    ↓
+결과 이미지 → media/simulations/ 저장 → URL 반환
+    ↓
+프론트엔드: retouched_image_url → 채팅창에 리터칭 이미지 말풍선 표시
+```
+
+**수정 파일:**
+- `backend/app/rag/chatbot_rag/retouch_nodes.py` — `_download_image()`, `_build_retouch_prompt()`, Gemini 호출 로직 추가
+- `backend/app/rag/rag_core/config.py` — `GEMINI_API_KEY`, `GEMINI_IMAGE_MODEL` 상수 추가
+- `backend/app/core/views.py` — `retouched_image_url` 응답 필드 반환
+
+**로컬 이미지 경로 최적화:**
+```python
+# HTTP 라운드트립 없이 Django media 파일 직접 읽기
+if url.startswith(media_url):
+    local_path = os.path.join(media_root, url[len(media_url):])
+# http://localhost:8000/media/... 형태도 처리
+for host in ("http://127.0.0.1:8000", "http://localhost:8000", ...):
+    if url.startswith(host + media_url):
+        local_path = ...
+```
+
+---
+
+#### ② LangGraph 라우팅 분기 수정 — 이미지 수정 확인 흐름 버그 수정
+
+**문제:** `PENDING_RETOUCH_CONFIRMATION` 조건에 `and selected_option` 가드가 있어 유저가 확인 버튼을 누르지 않으면 라우팅이 빠져나가지 못하는 버그.
+
+**해결:** 조건에서 `selected_option` 가드 제거.
+
+```python
+# 수정 전
+if pending == PENDING_RETOUCH_CONFIRMATION and selected_option:
+    return "handle_retouch_confirmation"
+
+# 수정 후
+if pending == PENDING_RETOUCH_CONFIRMATION:
+    return "handle_retouch_confirmation"
+```
+
+---
+
+#### ③ 새 인텐트 노드 추가 — 대화 기억 조회 / 후속 추천
+
+**추가된 인텐트:**
+
+| 인텐트 상수 | 설명 | 라우팅 노드 |
+|-------------|------|-------------|
+| `INTENT_MEMORY_RECALL` | "아까 추천해준 스타일이 뭐야?" 등 이전 대화 참조 | `answer_memory_recall` |
+| `INTENT_FOLLOWUP_RECOMMENDATION` | 추천 후 추가 질문 (다른 옵션, 이유 설명 등) | `answer_followup_recommendation` |
+
+**라우팅 우선순위 (route_after_intent):**
+```
+INTENT_MEMORY_RECALL (최우선)
+    → answer_memory_recall
+
+INTENT_RETOUCH
+    → analyze_retouch_request
+
+INTENT_FOLLOWUP_RECOMMENDATION (needs_clarification보다 먼저)
+    → answer_followup_recommendation
+
+...이하 기존 순서
+```
+
+**수정 파일:**
+- `backend/app/rag/chatbot_rag/graph.py` — 노드 등록 + 라우팅 분기 추가
+- `backend/app/rag/chatbot_rag/intents.py` — 상수 추가
+- `backend/app/rag/chatbot_rag/intent_keywords.py` — 키워드 확장
+- `backend/app/rag/chatbot_rag/intent_classifier.py` — 분류 로직 수정
+- `backend/app/rag/chatbot_rag/nodes.py` — `answer_followup_recommendation`, `answer_memory_recall` 노드 구현
+- `backend/app/rag/chatbot_rag/memory.py` — 대화 기억 참조 로직 추가
+
+---
+
+#### ④ `sentence-transformers` 버전 충돌 수정
+
+**문제:** `sentence-transformers==5.6.0`이 `huggingface-hub>=1.0` 런타임 체크를 수행하는데, 현재 환경의 `huggingface-hub` 버전과 충돌하여 임포트 오류 발생.
+
+**해결:** 버전 다운그레이드 + 관련 패키지 고정.
+
+```
+# requirements.txt 변경
+sentence-transformers: 5.6.0 → 3.0.1
+transformers: 4.44.2  (신규 고정)
+tokenizers: 0.19.1    (신규 고정)
+```
+
+**추가 수동 조치 필요 (설치 후 1회):**
+`transformers==4.44.2`가 `huggingface-hub` 버전을 런타임에 체크하므로 아래 파일에서 해당 항목을 수동 제거해야 함:
+```
+anaconda3/envs/p310_pj_styleflow/Lib/site-packages/transformers/dependency_versions_check.py
+→ pkgs_to_check_at_runtime 리스트에서 "huggingface-hub" 줄 삭제
+```
+
+---
+
+### [2026-06-19] AI 채팅 응답 대기 중 타이핑 인디케이터 애니메이션 추가
+
+**문제:** 유저가 메시지를 전송한 후 AI 응답이 생성되는 동안 (API 호출 + 800ms 딜레이) 채팅창에 아무런 피드백이 없어 응답이 오고 있는지 알 수 없는 UX 문제.
+
+**해결:** 세 개의 점이 순차적으로 bouncing하는 타이핑 인디케이터를 AI 말풍선 자리에 표시.
+
+**변경 파일:** `frontend/app/ai-stylist/page.tsx` (프론트엔드만 수정, 백엔드 변경 없음)
+
+**구현 내용:**
+
+| 항목 | 내용 |
+|------|------|
+| `TypingIndicator` 컴포넌트 | 회색 말풍선 + 세 점 `animate-bounce` (Tailwind, animation-delay로 순차 처리) |
+| `isTyping` state | API 호출 시작~응답 표시 직전 구간을 추적 |
+| 중복 전송 방지 | `handleSend`, `handleSelectOption` 진입 시 `isTyping`이면 즉시 return |
+| 입력 비활성화 | `isTyping` 중 Input, 전송 버튼 `disabled` |
+| 스크롤 연동 | `isTyping=true` 시 채팅 컨테이너 하단으로 자동 스크롤 |
+
+**타이밍:**
+```
+유저 전송
+  → setIsTyping(true)   ← 인디케이터 표시
+  → API 호출 (수 초)
+  → 응답 수신 → 800ms delay
+  → setIsTyping(false) + setMessages(...)  ← 인디케이터 → AI 말풍선으로 교체
+```
+
+에러/폴백 경로에서도 동일하게 800ms 후 `setIsTyping(false)` 처리하여 인디케이터가 남지 않도록 함.
