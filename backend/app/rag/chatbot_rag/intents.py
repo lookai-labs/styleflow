@@ -51,3 +51,4 @@ INTENT_CATEGORY_CONFLICT = "category_conflict"
 # memory / followup intents
 INTENT_MEMORY_RECALL = "memory_recall"
 INTENT_FOLLOWUP_RECOMMENDATION = "followup_recommendation"
+INTENT_RECOMMENDATION_RECALL = "recommendation_recall"

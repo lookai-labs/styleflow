@@ -26,6 +26,7 @@ from backend.app.rag.chatbot_rag.intents import (
     INTENT_CATEGORY_CONFLICT,
     INTENT_MOOD_CHOICE,
     INTENT_MOOD_SELECTION,
+    INTENT_RECOMMENDATION_RECALL,
     INTENT_RETOUCH,
     INTENT_STYLE_EXPLANATION,
     PENDING_SELECTION_MOOD,
@@ -988,6 +989,221 @@ def run_natural_retouch_tests(logs: list[str]) -> tuple[int, int]:
     return pass_count, total
 
 
+# ---------------------------------------------------------------------------
+# 추천 회상 테스트 — category 필터링 검증
+# ---------------------------------------------------------------------------
+
+# hair + makeup 혼합 추천 목록 (두 category 분리 검증용)
+_MIXED_RECOMMENDATIONS = [
+    {"category": CATEGORY_MAKEUP, "style_name": "로즈 데일리 메이크업", "style_code": "mk-su-rose", "makeup_group": "summer_rose"},
+    {"category": CATEGORY_MAKEUP, "style_name": "쿨톤 오피스 메이크업", "style_code": "mk-su-office", "makeup_group": "summer_office"},
+    {"category": CATEGORY_MAKEUP, "style_name": "코랄 내추럴 메이크업", "style_code": "mk-sp-coral", "makeup_group": "spring_coral"},
+    {"category": CATEGORY_HAIR, "style_name": "아이비리그", "style_code": "m-03"},
+    {"category": CATEGORY_HAIR, "style_name": "댄디", "style_code": "m-08"},
+    {"category": CATEGORY_HAIR, "style_name": "애즈", "style_code": "m-05"},
+]
+
+_SPRING_WARM_RECOMMENDATIONS = [
+    {"category": CATEGORY_HAIR, "style_name": "아이비리그"},
+    {"category": CATEGORY_HAIR, "style_name": "댄디"},
+    {"category": CATEGORY_HAIR, "style_name": "애즈"},
+    {"category": CATEGORY_MAKEUP, "style_name": "봄웜 내추럴 메이크업"},
+]
+
+_MULTI_MAKEUP_RECOMMENDATIONS = [
+    {"category": CATEGORY_HAIR, "style_name": "아이비리그"},
+    {"category": CATEGORY_HAIR, "style_name": "댄디"},
+    {"category": CATEGORY_MAKEUP, "style_name": "피치 메이크업"},
+    {"category": CATEGORY_MAKEUP, "style_name": "코랄 메이크업"},
+    {"category": CATEGORY_MAKEUP, "style_name": "내추럴 메이크업"},
+]
+
+RECOMMENDATION_RECALL_TEST_CASES: list[dict] = [
+    {
+        "label": "makeup_chat — selected_style 우선 응답 (헤어 추천 제외)",
+        "user_message": "내가 추천받은 게 뭐야?",
+        "target_type": CATEGORY_MAKEUP,
+        "applied_style_key": "mk-su-rose",
+        "previous_recommendations": _MIXED_RECOMMENDATIONS,
+        "expected_intent": INTENT_RECOMMENDATION_RECALL,
+        "expected_contains": ["로즈 데일리 메이크업"],
+        "expected_not_contains": ["아이비리그", "댄디", "애즈"],
+    },
+    {
+        "label": "makeup_chat — 추천 목록 응답 (헤어 추천 제외)",
+        "user_message": "추천받은 거 다시 알려줘",
+        "target_type": CATEGORY_MAKEUP,
+        "applied_style_key": None,
+        "previous_recommendations": _MIXED_RECOMMENDATIONS,
+        "expected_intent": INTENT_RECOMMENDATION_RECALL,
+        "expected_contains": ["로즈 데일리 메이크업", "쿨톤 오피스 메이크업", "코랄 내추럴 메이크업"],
+        "expected_not_contains": ["아이비리그", "댄디", "애즈"],
+    },
+    {
+        "label": "hair_chat — 추천 목록 응답 (메이크업 추천 제외)",
+        "user_message": "내가 추천받은 스타일이 뭐야?",
+        "target_type": CATEGORY_HAIR,
+        "applied_style_key": None,
+        "previous_recommendations": _MIXED_RECOMMENDATIONS,
+        "expected_intent": INTENT_RECOMMENDATION_RECALL,
+        "expected_contains": ["아이비리그", "댄디", "애즈"],
+        "expected_not_contains": ["로즈 데일리 메이크업", "쿨톤 오피스 메이크업", "코랄 내추럴 메이크업"],
+    },
+    {
+        "label": "hair_chat — selected_style 우선 응답 (메이크업 추천 제외)",
+        "user_message": "지금 선택한 스타일이 뭐야?",
+        "target_type": CATEGORY_HAIR,
+        "applied_style_key": "m-08",
+        "previous_recommendations": _MIXED_RECOMMENDATIONS,
+        "expected_intent": INTENT_RECOMMENDATION_RECALL,
+        "expected_contains": ["댄디"],
+        "expected_not_contains": ["로즈 데일리 메이크업", "쿨톤 오피스 메이크업"],
+    },
+    # ── 재현 케이스: "봄웜 내추럴 메이크업" 메이크업 채팅에서 공백 없는 구문 ──────────
+    {
+        "label": "makeup_chat — '내가 추천받은게 뭐야?' 공백 없는 구문, style_name이 applied_style_key (style_code 없음)",
+        "user_message": "내가 추천받은게 뭐야?",
+        "target_type": CATEGORY_MAKEUP,
+        "applied_style_key": "봄웜 내추럴 메이크업",
+        "previous_recommendations": _SPRING_WARM_RECOMMENDATIONS,
+        "chat_history": [
+            {
+                "role": "assistant",
+                "content": "'봄웜 내추럴 메이크업' 스타일에 대해 맞춤형 스타일링 상담을 도와드리겠습니다.",
+            }
+        ],
+        "expected_intent": INTENT_RECOMMENDATION_RECALL,
+        "expected_contains": ["봄웜 내추럴 메이크업"],
+        "expected_not_contains": ["아이비리그", "댄디", "애즈"],
+    },
+    # ── 재현 케이스: 헤어 채팅에서 "애즈" applied_style_key (style_name이 키) ─────────
+    {
+        "label": "hair_chat — '내가 추천받은게 뭐야?' 공백 없는 구문, applied_style_key=애즈 (style_code 없음)",
+        "user_message": "내가 추천받은게 뭐야?",
+        "target_type": CATEGORY_HAIR,
+        "applied_style_key": "애즈",
+        "previous_recommendations": _SPRING_WARM_RECOMMENDATIONS,
+        "expected_intent": INTENT_RECOMMENDATION_RECALL,
+        "expected_contains": ["애즈"],
+        "expected_not_contains": ["봄웜 내추럴 메이크업"],
+    },
+    # ── 재현 케이스: 메이크업 채팅에서 추천 목록만 있는 경우 ─────────────────────────
+    {
+        "label": "makeup_chat — 추천 목록만 있음 (피치/코랄/내추럴, 헤어 절대 포함 안 됨)",
+        "user_message": "추천받은 거 다시 알려줘",
+        "target_type": CATEGORY_MAKEUP,
+        "applied_style_key": None,
+        "previous_recommendations": _MULTI_MAKEUP_RECOMMENDATIONS,
+        "expected_intent": INTENT_RECOMMENDATION_RECALL,
+        "expected_contains": ["피치 메이크업", "코랄 메이크업", "내추럴 메이크업"],
+        "expected_not_contains": ["아이비리그", "댄디"],
+    },
+]
+
+
+def _build_recall_chatbot_input(case: dict) -> dict:
+    target_type = case.get("target_type")
+    previous_recommendations = case.get("previous_recommendations", [])
+    applied_style_key = case.get("applied_style_key")
+
+    if target_type == CATEGORY_MAKEUP:
+        base = dict(MAKEUP_INPUT)
+    else:
+        base = dict(HAIR_INPUT)
+
+    base["previous_recommendations"] = previous_recommendations
+    base["applied_style_key"] = applied_style_key
+    base["target_type"] = target_type
+    if "chat_history" in case:
+        base["chat_history"] = case["chat_history"]
+    return base
+
+
+def run_recommendation_recall_tests(logs: list[str]) -> tuple[int, int]:
+    total = len(RECOMMENDATION_RECALL_TEST_CASES)
+    pass_count = 0
+
+    logs.append("=" * 100)
+    logs.append(f"[추천 회상 테스트] 총 {total}개 (항상 run_chatbot 사용)")
+    logs.append("=" * 100)
+    logs.append("")
+
+    for index, case in enumerate(RECOMMENDATION_RECALL_TEST_CASES, start=1):
+        print(f"[RECALL {index}/{total}] {case['label']}")
+
+        chatbot_input = _build_recall_chatbot_input(case)
+
+        try:
+            result = run_chatbot(
+                user_message=case["user_message"],
+                **chatbot_input,
+            )
+        except Exception as exc:
+            result = {
+                "answer": "",
+                "intent": None,
+                "retrieval_info": {},
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+        actual_intent = result.get("intent")
+        answer = result.get("answer", "")
+
+        expected_intent = case.get("expected_intent")
+        expected_contains = case.get("expected_contains", [])
+        expected_not_contains = case.get("expected_not_contains", [])
+
+        intent_ok = actual_intent == expected_intent
+        contains_ok = all(phrase in answer for phrase in expected_contains)
+        not_contains_ok = all(phrase not in answer for phrase in expected_not_contains)
+
+        passed = intent_ok and contains_ok and not_contains_ok
+        if passed:
+            pass_count += 1
+
+        failures = []
+        if not intent_ok:
+            failures.append(f"intent_mismatch(expected={expected_intent}, got={actual_intent})")
+        for phrase in expected_contains:
+            if phrase not in answer:
+                failures.append(f"missing_in_answer: '{phrase}'")
+        for phrase in expected_not_contains:
+            if phrase in answer:
+                failures.append(f"unwanted_in_answer: '{phrase}'")
+
+        pass_label = "PASS" if passed else f"FAIL({', '.join(failures)})"
+
+        log_line = "\n".join(
+            [
+                "=" * 100,
+                f"[RECALL {index}/{total}] {case['label']}",
+                f"user_message: {case['user_message']}",
+                f"target_type: {case.get('target_type')}",
+                f"applied_style_key: {case.get('applied_style_key')}",
+                f"expected_intent: {expected_intent}",
+                f"actual_intent: {actual_intent}",
+                f"RESULT: {pass_label}",
+                "",
+                "[answer]",
+                answer,
+                "",
+            ]
+        )
+        logs.append(log_line)
+
+        status = "PASS" if passed else "FAIL"
+        print(
+            f"  → {status}, "
+            f"intent={actual_intent}, "
+            f"error={result.get('error')}"
+        )
+        if not passed:
+            for f in failures:
+                print(f"    FAIL reason: {f}")
+
+    return pass_count, total
+
+
 def main() -> None:
     cases = load_questions(QUESTION_FILE)
 
@@ -1127,6 +1343,10 @@ def main() -> None:
     print()
     retouch_detect_pass_count, retouch_detect_total = run_natural_retouch_tests(logs)
 
+    # 추천 회상 테스트
+    print()
+    recall_pass_count, recall_total = run_recommendation_recall_tests(logs)
+
     finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     logs.append("=" * 100)
@@ -1135,6 +1355,7 @@ def main() -> None:
     logs.append(f"image_test_pass={image_pass_count}/{image_total}")
     logs.append(f"category_conflict_test_pass={conflict_pass_count}/{conflict_total}")
     logs.append(f"natural_retouch_detect_test_pass={retouch_detect_pass_count}/{retouch_detect_total}")
+    logs.append(f"recommendation_recall_test_pass={recall_pass_count}/{recall_total}")
     logs.append("=" * 100)
 
     LOG_FILE.write_text("\n".join(logs), encoding="utf-8")
@@ -1145,6 +1366,7 @@ def main() -> None:
     print(f"이미지 테스트: {image_pass_count}/{image_total} PASS")
     print(f"카테고리 충돌 테스트: {conflict_pass_count}/{conflict_total} PASS")
     print(f"자연어 리터치 감지 테스트: {retouch_detect_pass_count}/{retouch_detect_total} PASS")
+    print(f"추천 회상 테스트: {recall_pass_count}/{recall_total} PASS")
     print(f"intent_only={INTENT_ONLY}")
     print("hair_makeup_split=True")
     print(f"로그 저장 위치: {LOG_FILE}")

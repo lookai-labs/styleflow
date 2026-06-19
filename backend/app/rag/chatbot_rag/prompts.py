@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.app.rag.chatbot_rag.intents import CATEGORY_HAIR, CATEGORY_MAKEUP, INTENT_STYLE_EXPLANATION
+from backend.app.rag.chatbot_rag.intents import (
+    CATEGORY_HAIR,
+    CATEGORY_MAKEUP,
+    INTENT_RECOMMENDATION_RECALL,
+    INTENT_STYLE_EXPLANATION,
+)
 from backend.app.rag.rag_core.schemas import ChatGenerationInput
 from backend.app.rag.rag_core.utils import format_documents_as_context
 
@@ -80,6 +85,14 @@ def _get_category_label(category: str | None) -> str:
 
 
 def _get_intent_specific_rules(intent: str | None, selected_recommendation: dict | None) -> str:
+    if intent == INTENT_RECOMMENDATION_RECALL:
+        return "\n".join([
+            "- 현재 질문은 이 채팅에서 추천받은 스타일이 무엇인지 묻는 질문입니다.",
+            "- [이전 추천 스타일] 섹션에 있는 스타일만 답변에 사용하세요.",
+            "- [최초 분석 결과]에 다른 카테고리 스타일명이 포함되어 있어도 절대 언급하지 마세요.",
+            "- 현재 카테고리의 추천 스타일만 명확하게 알려주세요.",
+        ])
+
     if intent != INTENT_STYLE_EXPLANATION:
         return ""
 
@@ -98,19 +111,25 @@ def _get_category_specific_rules(category: str | None) -> str:
     if category == CATEGORY_MAKEUP:
         return "\n".join(
             [
+                "- 이 채팅은 메이크업 전용 상담입니다.",
                 "- 현재 질문은 추천받은 메이크업에 대한 피드백 상담으로 처리하세요.",
                 "- 메이크업 답변은 퍼스널컬러, 이전 추천 메이크업, 검색된 메이크업 문맥을 기준으로 하세요.",
                 "- 얼굴형이나 삼정 비율을 메이크업 추천 근거로 사용하지 마세요.",
                 "- 검색 문맥에 없는 메이크업 그룹을 임의로 새로 추천하지 마세요.",
+                "- [최초 분석 결과]에 헤어스타일 이름이 포함되어 있어도 답변에 헤어스타일을 언급하지 마세요.",
+                "- 이 채팅에서 추천받은 스타일이 무엇인지 묻는 질문에는 [이전 추천 스타일]의 메이크업만 답하세요.",
             ]
         )
 
     return "\n".join(
         [
+            "- 이 채팅은 헤어 전용 상담입니다.",
             "- 현재 질문은 추천받은 헤어스타일에 대한 피드백 상담으로 처리하세요.",
             "- 헤어 답변은 얼굴형, 삼정 비율, 이전 추천 헤어스타일, 검색된 헤어 문맥을 기준으로 하세요.",
             "- 퍼스널컬러를 헤어 추천의 주요 근거로 사용하지 마세요.",
             "- 검색 문맥에 없는 헤어스타일을 임의로 새로 추천하지 마세요.",
+            "- [최초 분석 결과]에 메이크업 이름이 포함되어 있어도 답변에 메이크업을 언급하지 마세요.",
+            "- 이 채팅에서 추천받은 스타일이 무엇인지 묻는 질문에는 [이전 추천 스타일]의 헤어스타일만 답하세요.",
         ]
     )
 

@@ -381,7 +381,7 @@ MAKEUP_CATEGORY_KEYWORDS = [
 HAIR_CATEGORY_KEYWORDS = [
     "헤어",
     "머리",
-    "스타일",
+    "헤어스타일",
     "커트",
     "펌",
     "앞머리",
@@ -711,6 +711,43 @@ def detect_category_conflict(message: str, target_type: str | None) -> bool:
     return False
 
 
+_RECOMMENDATION_RECALL_PHRASES = [
+    # 공백 포함 기본형
+    "내가 추천받은 게 뭐야",
+    "내가 추천받은 스타일이 뭐야",
+    "나한테 추천된 게 뭐였지",
+    "나한테 추천된 게 뭐야",
+    "내 추천 결과 알려줘",
+    "추천받은 거 다시 알려줘",
+    "내가 고른 스타일이 뭐야",
+    "지금 선택한 스타일이 뭐야",
+    "방금 선택한 게 뭐야",
+    "추천받은 게 뭐야",
+    "추천된 게 뭐야",
+    "추천 결과 알려줘",
+    "추천 목록 알려줘",
+    "내 추천이 뭐야",
+    "내 추천이 뭐였지",
+    # 공백 없는 구어체 변형 (조사 붙음)
+    "내가 추천받은게 뭐야",
+    "추천받은 거 뭐였지",
+    "추천받은 스타일이 뭐야",
+    "내가 고른 게 뭐야",
+    "내가 고른게 뭐야",
+    "방금 고른 게 뭐야",
+    "방금 고른게 뭐야",
+]
+
+
+def is_recommendation_recall(message: str) -> bool:
+    msg = message.strip().lower()
+    if any(phrase in msg for phrase in _RECOMMENDATION_RECALL_PHRASES):
+        return True
+    # 한국어 조사/어미가 붙어 공백이 없는 형태도 허용 (예: "추천받은게" = "추천받은 게")
+    msg_compact = msg.replace(' ', '')
+    return any(phrase.replace(' ', '') in msg_compact for phrase in _RECOMMENDATION_RECALL_PHRASES)
+
+
 _MEMORY_RECALL_PHRASES = [
     "방금 뭐라고 했지",
     "방금 뭐라고 했어",
@@ -933,7 +970,8 @@ def _extract_outfit_context_from_message(user_message: str) -> str | None:
     return None
 
 
-def detect_question_category(message: str) -> str:
+def detect_question_category(message: str) -> str | None:
+    """메시지에서 명시적 카테고리 키워드를 찾는다. 없으면 None을 반환한다."""
     normalized_message = message.strip().lower()
 
     if any(keyword.lower() in normalized_message for keyword in MAKEUP_CATEGORY_KEYWORDS):
@@ -942,4 +980,30 @@ def detect_question_category(message: str) -> str:
     if any(keyword.lower() in normalized_message for keyword in HAIR_CATEGORY_KEYWORDS):
         return CATEGORY_HAIR
 
-    return CATEGORY_HAIR
+    return None
+
+
+def infer_category_from_chat_history(chat_history: list) -> str | None:
+    """
+    최근 대화 기록(새→구 순서)에서 카테고리 키워드가 처음 발견된 항목의 카테고리를 반환.
+    어시스턴트 발화 → 유저 발화 순으로 우선 검색하고, 최근 6턴만 참조한다.
+    """
+    recent = (chat_history or [])[-6:]
+
+    for turn in reversed(recent):
+        if turn.get("role") == "assistant":
+            content = turn.get("content", "")
+            if any(kw in content for kw in MAKEUP_CATEGORY_KEYWORDS):
+                return CATEGORY_MAKEUP
+            if any(kw in content for kw in HAIR_CATEGORY_KEYWORDS):
+                return CATEGORY_HAIR
+
+    for turn in reversed(recent):
+        if turn.get("role") == "user":
+            content = turn.get("content", "")
+            if any(kw in content for kw in MAKEUP_CATEGORY_KEYWORDS):
+                return CATEGORY_MAKEUP
+            if any(kw in content for kw in HAIR_CATEGORY_KEYWORDS):
+                return CATEGORY_HAIR
+
+    return None

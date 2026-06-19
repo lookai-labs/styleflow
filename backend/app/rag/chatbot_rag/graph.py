@@ -41,6 +41,7 @@ from backend.app.rag.chatbot_rag.nodes import (
     handle_outfit_context_pending,
     handle_outfit_option_pending,
     handle_outfit_user_image_pending,
+    handle_recommendation_recall,
     handle_synthesis_confirmation,
     resolve_pending_selection,
     retrieve_context,
@@ -57,6 +58,7 @@ from backend.app.rag.chatbot_rag.intents import (
     INTENT_MOOD_SELECTION,
     INTENT_OUTFIT_FIT_CHECK,
     INTENT_OUTFIT_RECOMMENDATION,
+    INTENT_RECOMMENDATION_RECALL,
     INTENT_RETOUCH,
     INTENT_STYLE_EXPLANATION,
     OUTFIT_INTENTS,
@@ -167,6 +169,10 @@ def route_after_intent(state: ChatbotState) -> str:
     if intent == INTENT_CATEGORY_CONFLICT:
         return "update_memory"
 
+    # 추천 회상 질문 — category 필터링 후 상태 기반 응답
+    if intent == INTENT_RECOMMENDATION_RECALL:
+        return "handle_recommendation_recall"
+
     if intent == INTENT_RETOUCH:
         return "analyze_retouch_request"
 
@@ -263,9 +269,10 @@ def build_chatbot_graph():
     graph.add_node("handle_outfit_user_image_pending", handle_outfit_user_image_pending)
     graph.add_node("run_outfit_synthesis", run_outfit_synthesis)
 
-    # 대화 기억 / 후속 추천 노드
+    # 대화 기억 / 후속 추천 / 추천 회상 노드
     graph.add_node("answer_memory_recall", answer_memory_recall)
     graph.add_node("answer_followup_recommendation", answer_followup_recommendation)
+    graph.add_node("handle_recommendation_recall", handle_recommendation_recall)
 
     # 리터칭 노드
     graph.add_node("analyze_retouch_request", analyze_retouch_request)
@@ -372,6 +379,7 @@ def build_chatbot_graph():
         {
             "answer_memory_recall": "answer_memory_recall",
             "update_memory": "update_memory",
+            "handle_recommendation_recall": "handle_recommendation_recall",
             "analyze_retouch_request": "analyze_retouch_request",
             "answer_followup_recommendation": "answer_followup_recommendation",
             "ask_clarification": "ask_clarification",
@@ -437,6 +445,7 @@ def build_chatbot_graph():
     # update_memory로 수렴하는 엣지들
     graph.add_edge("answer_memory_recall", "update_memory")
     graph.add_edge("answer_followup_recommendation", "update_memory")
+    graph.add_edge("handle_recommendation_recall", "update_memory")
     graph.add_edge("ask_retouch_clarification", "update_memory")
     graph.add_edge("ask_retouch_confirmation", "update_memory")
     graph.add_edge("ask_retouch_image_required", "update_memory")
@@ -502,6 +511,9 @@ def run_chatbot(
         "user_profile": user_profile or {},
         "chat_history": chat_history or [],
     }
+
+    if normalized_target_type in {CATEGORY_HAIR, CATEGORY_MAKEUP}:
+        initial_state["category"] = normalized_target_type
 
     result = graph.invoke(initial_state)
 

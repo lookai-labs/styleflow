@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from backend.app.rag.chatbot_rag.bypass_gate import get_bypass_response
@@ -10,8 +11,10 @@ from backend.app.rag.chatbot_rag.intent_keywords import (
     detect_category_conflict,
     detect_natural_retouch_target,
     detect_question_category,
+    infer_category_from_chat_history,
     is_followup_recommendation,
     is_memory_recall,
+    is_recommendation_recall,
     is_retouch_request,
 )
 from backend.app.rag.chatbot_rag.intents import (
@@ -29,6 +32,7 @@ from backend.app.rag.chatbot_rag.intents import (
     INTENT_OUTFIT_EVENT_COORDINATION,
     INTENT_OUTFIT_FIT_CHECK,
     INTENT_OUTFIT_RECOMMENDATION,
+    INTENT_RECOMMENDATION_RECALL,
     INTENT_RETOUCH,
     INTENT_SMALLTALK,
     INTENT_UNCLEAR,
@@ -411,12 +415,28 @@ def classify_intent(state: ChatbotState) -> ChatbotState:
     applied_style_key = state.get("applied_style_key")
 
     target_type = _normalize_target_type(state.get("target_type"))
-    category = target_type or detect_question_category(user_message)
+    category = (
+        target_type
+        or detect_question_category(user_message)
+        or infer_category_from_chat_history(state.get("chat_history") or [])
+        or CATEGORY_HAIR
+    )
 
     # 대화 기억 질문 — RAG 없이 빠르게 처리
     if is_memory_recall(user_message):
         state["intent"] = INTENT_MEMORY_RECALL
         state["intent_debug"] = {"classifier": "keyword_gate", "reason": "memory_recall_keyword"}
+        state["category"] = category
+        state["detected_style"] = None
+        state["detected_style_is_recommended"] = False
+        state["needs_clarification"] = False
+        state["clarification_options"] = []
+        return state
+
+    # 추천 회상 질문 — category 필터링 후 상태 기반 응답
+    if is_recommendation_recall(user_message):
+        state["intent"] = INTENT_RECOMMENDATION_RECALL
+        state["intent_debug"] = {"classifier": "keyword_gate", "reason": "recommendation_recall_keyword"}
         state["category"] = category
         state["detected_style"] = None
         state["detected_style_is_recommended"] = False
@@ -573,7 +593,11 @@ def retrieve_context(state: ChatbotState) -> ChatbotState:
         return state
 
     user_message = state.get("user_message", "")
-    category = state.get("category") or CATEGORY_HAIR
+    category = (
+        _normalize_target_type(state.get("target_type"))
+        or state.get("category")
+        or CATEGORY_HAIR
+    )
     gender = state.get("gender")
     face_shape = state.get("face_shape")
     face_proportion = state.get("face_proportion")
@@ -1422,5 +1446,163 @@ def answer_followup_recommendation(state: ChatbotState) -> ChatbotState:
         "fallback_stage": "none",
         "skipped_rag": True,
         "skip_reason": "followup_recommendation",
+    }
+    return state
+
+
+def _resolve_selected_style_for_category(state: ChatbotState) -> dict | None:
+    """
+    현재 category에 맞는 선택 스타일을 상태 또는 chat_history에서 복원한다.
+
+    복원 우선순위:
+    1. check_analysis_exists가 이미 설정한 selected_recommendation (category 필터 적용됨)
+    2. applied_style_key로 category 필터링된 previous_recommendations 매칭
+    3. category 추천이 1개뿐이면 그것을 선택 스타일로 사용
+    4. chat_history assistant 메시지에서 "'스타일명' 스타일에 대해" 패턴 추출
+    5. None (list 응답으로 fallback)
+
+    메이크업 채팅이면 hair 추천, 헤어 채팅이면 makeup 추천을 절대 반환하지 않는다.
+    """
+    target_type = _normalize_target_type(state.get("target_type"))
+    user_message = state.get("user_message", "")
+    current_category = (
+        target_type
+        or state.get("category")
+        or detect_question_category(user_message)
+        or infer_category_from_chat_history(state.get("chat_history") or [])
+        or CATEGORY_HAIR
+    )
+
+    if not current_category:
+        return None
+
+    # 1. check_analysis_exists에서 이미 설정된 selected_recommendation 우선 사용.
+    #    _find_recommended_style_by_key는 category 필터 후 반환하므로 "category" 키가 없어도 안전.
+    selected_recommendation = state.get("selected_recommendation")
+    if selected_recommendation:
+        rec_category = selected_recommendation.get("category")
+        if rec_category is None or rec_category == current_category:
+            return selected_recommendation
+
+    # 2. category 필터링된 추천 목록
+    previous_recommendations = state.get("previous_recommendations") or []
+    category_recs = [r for r in previous_recommendations if r.get("category") == current_category]
+
+    # 3. applied_style_key로 category_recs에서 매칭 (style_code가 없고 style_name이 키인 경우 포함)
+    applied_style_key = state.get("applied_style_key")
+    if applied_style_key:
+        for r in category_recs:
+            candidate_keys = {
+                r.get("style_code"),
+                r.get("style_key"),
+                r.get("applied_style_key"),
+                r.get("style_name"),
+                r.get("makeup_group"),
+            }
+            if applied_style_key in {str(k) for k in candidate_keys if k}:
+                return r
+
+    # 4. category 추천이 1개뿐이면 그것이 현재 상담 스타일
+    if len(category_recs) == 1:
+        return category_recs[0]
+
+    # 5. chat_history의 assistant 메시지에서 "'스타일명' 스타일에 대해" 패턴 추출
+    for turn in state.get("chat_history") or []:
+        if turn.get("role") == "user":
+            continue
+        text = turn.get("content") or turn.get("assistant") or ""
+        match = re.search(r"'([^']+)' 스타일에 대해", text)
+        if match:
+            name = match.group(1)
+            for r in category_recs:
+                if r.get("style_name") == name:
+                    return r
+            if name:
+                return {"category": current_category, "style_name": name}
+
+    return None
+
+
+def handle_recommendation_recall(state: ChatbotState) -> ChatbotState:
+    """
+    추천 회상 질문에 대해 현재 category의 추천만 필터링해 상태 기반으로 답변한다.
+    RAG 검색을 거치지 않는다.
+
+    메이크업 채팅에서는 반드시 메이크업 추천만, 헤어 채팅에서는 헤어 추천만 반환한다.
+    """
+    user_message = state.get("user_message", "")
+    target_type = _normalize_target_type(state.get("target_type"))
+    current_category = target_type or state.get("category") or detect_question_category(user_message)
+    personal_color = state.get("personal_color") or ""
+
+    previous_recommendations = state.get("previous_recommendations") or []
+    filtered_recs = [
+        r for r in previous_recommendations
+        if r.get("category") == current_category
+    ]
+
+    resolved_style = _resolve_selected_style_for_category(state)
+
+    if current_category == CATEGORY_MAKEUP:
+        chat_label = "메이크업"
+        style_label = "메이크업"
+        no_rec_msg = (
+            "현재 메이크업 채팅에서 확인할 수 있는 추천 메이크업 정보가 없어요.\n"
+            "분석 결과에서 메이크업 추천을 다시 확인해 주세요."
+        )
+    else:
+        chat_label = "헤어"
+        style_label = "헤어스타일"
+        no_rec_msg = (
+            "현재 헤어 채팅에서 확인할 수 있는 추천 헤어 정보가 없어요.\n"
+            "분석 결과에서 헤어 추천을 다시 확인해 주세요."
+        )
+
+    if resolved_style:
+        style_name = resolved_style.get("style_name", "")
+        if current_category == CATEGORY_MAKEUP:
+            if personal_color:
+                state["answer"] = (
+                    f"현재 메이크업 채팅에서 선택하신 추천 스타일은 '{style_name}'이에요.\n"
+                    f"{personal_color} 퍼스널컬러에 맞춰 자연스럽고 조화롭게 연출하는 메이크업 스타일입니다."
+                )
+            else:
+                state["answer"] = (
+                    f"현재 메이크업 채팅에서 선택하신 추천 스타일은 '{style_name}'이에요.\n"
+                    "해당 스타일에 대해 더 궁금한 점이 있으시면 말씀해 주세요."
+                )
+        else:
+            state["answer"] = (
+                f"현재 헤어 채팅에서 선택하신 추천 스타일은 '{style_name}'이에요.\n"
+                "고객님의 얼굴형과 삼정 비율을 기준으로 추천된 헤어스타일입니다."
+            )
+    elif filtered_recs:
+        names = [r.get("style_name", "") for r in filtered_recs if r.get("style_name")]
+        name_str = ", ".join(names)
+        if current_category == CATEGORY_MAKEUP:
+            state["answer"] = (
+                f"현재 메이크업 채팅에서 추천받은 {style_label}은 {name_str}이에요.\n"
+                "현재 선택하신 스타일이 있다면 해당 스타일을 기준으로 더 자세히 상담해드릴 수 있어요."
+            )
+        else:
+            state["answer"] = (
+                f"현재 {chat_label} 채팅에서 추천받은 {style_label}은 {name_str}이에요.\n"
+                "현재 선택하신 스타일을 기준으로 어울림이나 손질법을 더 자세히 안내해드릴 수 있어요."
+            )
+    else:
+        state["answer"] = no_rec_msg
+
+    state["retrieval_result"] = RetrievalResult(
+        query=user_message,
+        documents=[],
+        retrieved_count=0,
+        fallback_stage=None,
+        used_filter={},
+    )
+    state["retrieval_info"] = {
+        "retrieved_count": 0,
+        "fallback_stage": "none",
+        "skipped_rag": True,
+        "skip_reason": "recommendation_recall",
     }
     return state
