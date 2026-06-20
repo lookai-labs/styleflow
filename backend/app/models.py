@@ -35,7 +35,7 @@ class HairStyle(models.Model):
 
 
 class MakeupStyle(models.Model):
-    style_code = models.CharField(max_length=20, null=True, blank=True, unique=True)
+    style_code = models.CharField(max_length=20, null=True, blank=True)
     style_name = models.CharField(max_length=100)
     image_url = models.CharField(max_length=500, null=True, blank=True)
 

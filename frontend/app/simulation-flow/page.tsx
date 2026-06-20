@@ -96,8 +96,8 @@ function SimulationFlowInner() {
   const [makeupResultImage, setMakeupResultImage] = useState<string>("");
   // 분석 결과 (스타일 이름 매핑용)
   const [analysisResult, setAnalysisResult] = useState<{
-    hair_mappings?: Array<{ id: number; style_name: string; style_code?: string }>;
-    makeup_mappings?: Array<{ id: number; style_name: string; style_code?: string }>;
+    hair_mappings?: Array<{ id: number; style_name: string; style_code?: string; image_url?: string }>;
+    makeup_mappings?: Array<{ id: number; style_name: string; style_code?: string; image_url?: string }>;
   } | null>(null);
   // 단계별 확정된 스타일 이름
   const [selectedStyleNames, setSelectedStyleNames] = useState<Partial<Record<StyleType, string>>>({});
@@ -214,6 +214,15 @@ function SimulationFlowInner() {
       const formData = new FormData();
       formData.append("face_image", file);
 
+      const _arRawMakeup = localStorage.getItem("styleflow_analysis_result");
+      const _arMakeup = _arRawMakeup ? JSON.parse(_arRawMakeup) : null;
+      const makeupRefs = (_arMakeup?.makeup_mappings ?? [])
+        .filter((m: { image_url?: string }) => m.image_url)
+        .map((m: { style_name: string; image_url?: string }) => ({ name: m.style_name, url: m.image_url }));
+      if (makeupRefs.length > 0) {
+        formData.append("reference_images", JSON.stringify(makeupRefs));
+      }
+
       api.post<{ results: { id: string; image: string; name: string }[] }>("/simulate/makeup/", formData)
         .then(({ data }) => {
           clearInterval(interval);
@@ -283,6 +292,16 @@ function SimulationFlowInner() {
         .then((file) => {
           const formData = new FormData();
           formData.append("face_image", file);
+
+          const _arRawHair = localStorage.getItem("styleflow_analysis_result");
+          const _arHair = _arRawHair ? JSON.parse(_arRawHair) : null;
+          const hairRefs = (_arHair?.hair_mappings ?? [])
+            .filter((m: { image_url?: string }) => m.image_url)
+            .map((m: { style_name: string; image_url?: string }) => ({ name: m.style_name, url: m.image_url }));
+          if (hairRefs.length > 0) {
+            formData.append("reference_images", JSON.stringify(hairRefs));
+          }
+
           return api.post<{ results: { id: string; image: string; name: string }[] }>("/simulate/hair/", formData);
         })
         .then(({ data }) => {

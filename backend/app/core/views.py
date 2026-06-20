@@ -1,8 +1,16 @@
 import logging
 import os
+import sys
 import uuid
+from pathlib import Path
 
 from django.conf import settings
+
+# face_analysis 경로 등록 (diagnose, Recommend 모듈의 flat import 구조 대응)
+_FA_DIR = Path(__file__).parent.parent / 'face_analysis'
+if str(_FA_DIR) not in sys.path:
+    sys.path.insert(0, str(_FA_DIR))
+
 from django.contrib.auth.hashers import make_password, check_password
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, parser_classes, permission_classes
@@ -242,6 +250,7 @@ _FACE_SHAPE_MAP = {
     'oval': '계란형',
     'square': '각진형',
     'heart': '역삼각형',
+    'oblong': '장방형',
     'long': '장방형',
 }
 
@@ -281,52 +290,107 @@ _DUMMY_MAKEUP_MALE = [
 ]
 
 
+def _samjeong_to_face_point(samjeong: dict | None) -> str:
+    if not samjeong or samjeong.get('is_balanced', True):
+        return 'golden'
+    longest = samjeong.get('longest', '')
+    if '상안부' in longest:
+        return 'upper'
+    if '중안부' in longest:
+        return 'middle'
+    if '하안부' in longest:
+        return 'lower'
+    return 'golden'
+
+
+def _personal_color_to_skin_tone(pc: dict | None) -> str | None:
+    if not pc or pc.get('error'):
+        return None
+    label = pc.get('final_label')
+    if not label:
+        label = (pc.get('top1') or {}).get('label', '')
+    return {
+        'spring_warm':  'spring',
+        'summer_cool':  'summer',
+        'autumn_warm':  'fall',
+        'winter_cool':  'winter',
+    }.get(label)
+
+
 @api_view(['POST'])
 @parser_classes([MultiPartParser])
 def analyze(request):
     """
-    RAG 기반 분석 결과 요약 생성.
-
-    face_image, face_shape, face_point, skin_tone 을 받아
-    AnalysisSession 생성 → RAG 추천 → StyleMappingList 저장 후 결과를 반환한다.
+    얼굴 사진 → AI 분석(face_analysis) → RAG 추천 요약 → DB 저장 → 결과 반환.
     """
-    face_shape = request.data.get('face_shape', 'round')
-    face_point = request.data.get('face_point', 'golden')
-    skin_tone = request.data.get('skin_tone', 'spring')
     gender = getattr(request.user, 'gender', 'female')
-
-    # ChromaDB metadata와 일치하는 한국어 값으로 변환 (RAG 필터에 사용)
     rag_gender = _GENDER_MAP.get(gender, '여성')
-    rag_face_shape = _FACE_SHAPE_MAP.get(face_shape, face_shape)
-    face_proportion = _FACE_PROPORTION_MAP.get(face_point, '균형')
-    personal_color = _PERSONAL_COLOR_MAP.get(skin_tone, '봄웜')
 
     # ① 이미지 저장
     face_image = request.FILES.get('face_image')
-    image_path = ''
-    if face_image:
-        save_dir = os.path.join(settings.MEDIA_ROOT, 'analyses')
-        os.makedirs(save_dir, exist_ok=True)
-        ext = os.path.splitext(face_image.name)[1] or '.png'
-        filename = f"{uuid.uuid4().hex}{ext}"
-        with open(os.path.join(save_dir, filename), 'wb') as f:
-            for chunk in face_image.chunks():
-                f.write(chunk)
-        image_path = f'analyses/{filename}'
+    if not face_image:
+        return Response({'error': '얼굴 이미지가 필요합니다.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # ② AnalysisSession 생성
+    save_dir = os.path.join(settings.MEDIA_ROOT, 'analyses')
+    os.makedirs(save_dir, exist_ok=True)
+    ext = os.path.splitext(face_image.name)[1] or '.jpg'
+    filename = f"{uuid.uuid4().hex}{ext}"
+    abs_image_path = os.path.join(save_dir, filename)
+    with open(abs_image_path, 'wb') as f:
+        for chunk in face_image.chunks():
+            f.write(chunk)
+    image_path = f'analyses/{filename}'
+
+    # ② AI 분석 (얼굴형 + 삼정 + 퍼스널컬러)
+    try:
+        from diagnose import diagnose as fa_diagnose
+        from Recommend import recommend as fa_recommend
+        diagnosis = fa_diagnose(abs_image_path)
+        recommendation = fa_recommend(diagnosis, gender)
+    except Exception as e:
+        logger.error("Face_Analysis 실패: user_id=%s, error=%s", request.user.id, e, exc_info=True)
+        return Response({'error': 'AI 분석 중 오류가 발생했습니다.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # ③ 분석 결과 → DB 필드 매핑
+    fs = diagnosis.get('face_shape') or {}
+    sj = diagnosis.get('samjeong')
+    pc = diagnosis.get('personal_color') or {}
+
+    face_shape_en   = fs.get('label_en', 'round')
+    face_point      = _samjeong_to_face_point(sj)
+    skin_tone       = _personal_color_to_skin_tone(pc)
+
+    rag_face_shape   = _FACE_SHAPE_MAP.get(face_shape_en, face_shape_en)
+    face_proportion  = _FACE_PROPORTION_MAP.get(face_point, '균형')
+    personal_color_ko = pc.get('display_name') or _PERSONAL_COLOR_MAP.get(skin_tone, '봄웜')
+
+    sj_ratios = (sj or {}).get('ratios', {})
+
+    # ④ AnalysisSession 생성
     session = AnalysisSession.objects.create(
         user_id=request.user.id,
         image_path=image_path,
-        face_shape=face_shape,
+        face_shape=face_shape_en,
         face_point=face_point,
         skin_tone=skin_tone,
+        ratio_upper_third=sj_ratios.get('상안부'),
+        ratio_middle_third=sj_ratios.get('중안부'),
+        ratio_lower_third=sj_ratios.get('하안부'),
     )
 
-    recommended_hair_styles = _DUMMY_HAIR_RECOMMENDATIONS
-    recommended_makeup_styles = _DUMMY_MAKEUP_MALE if gender == 'male' else _DUMMY_MAKEUP_STYLES
+    # ⑤ 추천 스타일 목록 (상위 3개) + RAG용 style_code 미리 조회
+    hair_names   = (recommendation.get('hairstyle') or {}).get('recommended', [])[:3]
+    makeup_names = (recommendation.get('makeup') or {}).get('recommended', [])[:3]
 
-    # ③ RAG 호출 (ChromaDB metadata와 일치하는 한국어 값 사용)
+    hair_code_prefix = 'm-' if gender == 'male' else 'f-'
+    recommended_hair_styles = []
+    for n in hair_names:
+        obj = HairStyle.objects.filter(style_name=n, hair_code__startswith=hair_code_prefix).first()
+        recommended_hair_styles.append({'style_name': n, 'style_code': obj.hair_code if obj else ''})
+
+    recommended_makeup_styles = [{'style_name': n} for n in makeup_names]
+
+    # ⑥ RAG 호출
     try:
         from backend.app.rag.analysis_rag.service import generate_analysis_result
         result = generate_analysis_result(
@@ -334,22 +398,19 @@ def analyze(request):
             face_shape=rag_face_shape,
             face_proportion=face_proportion,
             recommended_hair_styles=recommended_hair_styles,
-            personal_color=personal_color,
+            personal_color=personal_color_ko,
             recommended_makeup_styles=recommended_makeup_styles or None,
         )
     except Exception as e:
-        logger.error("RAG 분석 실패: user_id=%s, face_shape=%s, error=%s", request.user.id, face_shape, e, exc_info=True)
+        logger.error("RAG 분석 실패: user_id=%s, error=%s", request.user.id, e, exc_info=True)
         return Response({'error': 'RAG 분석 중 오류가 발생했습니다.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    # ④ StyleMappingList 저장
+    # ⑦ StyleMappingList 저장
     hair_mappings = []
     for style in recommended_hair_styles:
         style_name = style['style_name']
-        style_code = style.get('style_code', '')
-        hair_style_obj = (
-            HairStyle.objects.filter(style_name=style_name).first()
-            or HairStyle.objects.filter(hair_code=style_code).first()
-        )
+        hair_style_obj = HairStyle.objects.filter(style_name=style_name, hair_code__startswith=hair_code_prefix).first()
+        style_code = (hair_style_obj.hair_code or '') if hair_style_obj else ''
         mapping = StyleMappingList.objects.create(
             user_id=request.user.id,
             analysis_session=session,
@@ -361,39 +422,42 @@ def analyze(request):
             'id': mapping.id,
             'style_name': style_name,
             'style_code': style_code,
-            'image_url': hair_style_obj.image_url if hair_style_obj else '',
+            'image_url': (hair_style_obj.image_url or '') if hair_style_obj else '',
         })
 
     makeup_mappings = []
     for style in recommended_makeup_styles:
         style_name = style['style_name']
-        style_code = style.get('style_code', '')
-        makeup_style_obj = MakeupStyle.objects.filter(style_name=style_name).first()
-        if not style_code and makeup_style_obj:
-            style_code = makeup_style_obj.style_code or ''
-        mapping = StyleMappingList.objects.create(
-            user_id=request.user.id,
-            analysis_session=session,
-            type='makeup',
-            makeup_style=makeup_style_obj,
-            style_name=style_name,
-        )
-        makeup_mappings.append({
-            'id': mapping.id,
-            'style_name': style_name,
-            'style_code': style_code,
-            'image_url': makeup_style_obj.image_url if makeup_style_obj else '',
-        })
+        if gender == 'male':
+            makeup_style_objs = list(MakeupStyle.objects.filter(style_name=style_name))
+        else:
+            obj = MakeupStyle.objects.filter(style_name=style_name).first()
+            makeup_style_objs = [obj] if obj else []
+        for makeup_style_obj in makeup_style_objs:
+            style_code = (makeup_style_obj.style_code or '') if makeup_style_obj else ''
+            mapping = StyleMappingList.objects.create(
+                user_id=request.user.id,
+                analysis_session=session,
+                type='makeup',
+                makeup_style=makeup_style_obj,
+                style_name=style_name,
+            )
+            makeup_mappings.append({
+                'id': mapping.id,
+                'style_name': style_name,
+                'style_code': style_code,
+                'image_url': (makeup_style_obj.image_url or '') if makeup_style_obj else '',
+            })
 
     return Response({
-        'hair_analysis_summary': result['hair_analysis_summary'],
+        'hair_analysis_summary':   result['hair_analysis_summary'],
         'makeup_analysis_summary': result.get('makeup_analysis_summary'),
-        'face_shape': rag_face_shape,
-        'skin_tone': skin_tone,
-        'personal_color': personal_color,
-        'analysis_session_id': session.id,
-        'hair_mappings': hair_mappings,
-        'makeup_mappings': makeup_mappings,
+        'face_shape':              rag_face_shape,
+        'skin_tone':               skin_tone,
+        'personal_color':          personal_color_ko,
+        'analysis_session_id':     session.id,
+        'hair_mappings':           hair_mappings,
+        'makeup_mappings':         makeup_mappings,
     })
 
 

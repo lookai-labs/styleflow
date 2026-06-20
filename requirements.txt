@@ -101,8 +101,12 @@ scikit-learn==1.2.2
 scikit-image==0.22.0
 threadpoolctl==3.4.0
 joblib==1.2.0
+lightgbm
 attrs==26.1.0
 opt_einsum==3.4.0
+
+# 엑셀 파싱 (Face Analysis — makeup.xlsx)
+openpyxl
 
 # 시각화
 matplotlib==3.7.1

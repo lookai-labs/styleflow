@@ -32,18 +32,18 @@ def _is_503(e: Exception) -> bool:
 def invoke_with_retry(chat_model: ChatGoogleGenerativeAI, prompt: str, max_retries: int = 3) -> Any:
     last_exc: Exception | None = None
 
-    for attempt in range(1, max_retries + 2):
+    for attempt in range(1, max_retries + 1):
         try:
             return chat_model.invoke(prompt)
         except Exception as e:
             if not _is_503(e):
                 raise
             last_exc = e
-            if attempt <= max_retries:
+            if attempt < max_retries:
                 wait = 2 ** attempt
                 logger.warning(
                     "Gemini 503 오류 (시도 %d/%d), %d초 후 재시도: %s",
-                    attempt, max_retries + 1, wait, e,
+                    attempt, max_retries, wait, e,
                 )
                 time.sleep(wait)
 

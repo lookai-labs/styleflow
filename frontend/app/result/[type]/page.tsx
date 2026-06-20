@@ -193,7 +193,7 @@ export default function ResultPage() {
               const dynamicItems =
                 apiMappings && apiMappings.length > 0
                   ? apiMappings.map((m) => ({
-                      name: m.style_name,
+                      name: category === 'hair' ? `${m.style_name} 헤어` : m.style_name,
                       image: m.image_url ?? "",
                       desc: "",
                     }))
@@ -217,9 +217,9 @@ export default function ResultPage() {
                       >
                         <div className="relative overflow-hidden">
                           <img
-                            src={item.image}
+                            src={item.image || undefined}
                             alt={item.name}
-                            className="w-full h-56 object-cover transition-transform duration-500 group-hover:scale-105"
+                            className={`w-full h-56 object-cover transition-transform duration-500 group-hover:scale-105 ${category === 'hair' ? 'object-top' : 'object-center'}`}
                           />
                         </div>
                         <div className="p-4">
