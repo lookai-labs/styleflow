@@ -412,23 +412,6 @@ python manage.py runserver --noreload
 
 ---
 
-## 11. DB 연동 시 이미지 경로 정리 유의사항
-
-현재 스타일 레퍼런스 이미지가 두 곳에 중복 관리되고 있음.
-
-| 위치 | 용도 |
-|------|------|
-| `frontend/public/reference/makeup\|hair/` | 프론트 FALLBACK_RESULTS 미리보기용 |
-| `backend/gan_models/.../imgs/makeup\|hair/` | GAN 추론 레퍼런스용 |
-
-**DB 연동 후 개선 방향:**
-- 이미지를 Django `media/styles/`에 한 번만 업로드
-- DB `MakeupStyle.image_url` / `HairStyle.image_url` 에 해당 URL 저장
-- 백엔드: `MEDIA_ROOT` 기준 파일시스템 경로로 GAN에 전달
-- 프론트엔드: `image_url` (URL)을 미리보기에 직접 사용
-- 이 시점에 `frontend/public/reference/` 정적 이미지와 `backend/.../imgs/` 중복 제거 가능
-
----
 
 ## 12. 향후 확장 포인트
 

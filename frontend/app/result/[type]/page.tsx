@@ -56,11 +56,6 @@ type AnalysisResult = {
   makeup_mappings?: StyleMapping[];
 };
 
-const BACKEND_BASE = "http://localhost:8000";
-const toAbsUrl = (url?: string) => {
-  if (!url) return "";
-  return url.startsWith("http") ? url : `${BACKEND_BASE}${url}`;
-};
 
 export default function ResultPage() {
   const router = useRouter();
@@ -199,7 +194,7 @@ export default function ResultPage() {
                 apiMappings && apiMappings.length > 0
                   ? apiMappings.map((m) => ({
                       name: m.style_name,
-                      image: toAbsUrl(m.image_url),
+                      image: m.image_url ?? "",
                       desc: "",
                     }))
                   : null;
