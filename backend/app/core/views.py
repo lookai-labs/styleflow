@@ -586,6 +586,8 @@ def simulate_save(request):
         analysis_session=session,
         is_saved=is_saved,
         generated_image_path=f'simulations/{after_image_filename}',
+        makeup_name=request.data.get('makeup_name', ''),
+        hair_name=request.data.get('hair_name', ''),
     )
     sim.save()
 

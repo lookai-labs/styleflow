@@ -107,14 +107,16 @@ export default function ResultPage() {
 
           <div className="grid lg:grid-cols-5 gap-6">
             {/* 업로드 사진 */}
-            <div className="lg:col-span-2">
-              <Card className="overflow-hidden border border-gray-200">
-                <img
-                  src={faceImage || "/reference/makeup/MS1.png"}
-                  alt="업로드된 사진"
-                  className="w-full h-80 object-cover"
-                />
-                <div className="p-3 bg-gray-50 text-center">
+            <div className="lg:col-span-2 h-full">
+              <Card className="h-full overflow-hidden border border-gray-200 flex flex-col">
+                <div className="relative flex-1 overflow-hidden">
+                  <img
+                    src={faceImage || "/reference/makeup/MS1.png"}
+                    alt="업로드된 사진"
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                </div>
+                <div className="p-3 bg-gray-50 text-center flex-shrink-0">
                   <span className="text-xs text-gray-400">업로드된 원본 사진</span>
                 </div>
               </Card>

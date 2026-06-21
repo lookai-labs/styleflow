@@ -136,6 +136,8 @@ class SimulationResult(models.Model):
 
     generated_image_path = models.CharField(max_length=500, null=True, blank=True)
     is_saved = models.BooleanField(default=False)
+    makeup_name = models.CharField(max_length=100, blank=True, default='')
+    hair_name = models.CharField(max_length=100, blank=True, default='')
 
     created_at = models.DateTimeField(auto_now_add=True)
 

@@ -69,6 +69,7 @@ def _run_hair_inner(source_path: str, output_dir: str, reference_images: list | 
     results = []
 
     refs = _resolve_reference_images(reference_images) if reference_images else REFERENCE_IMAGES
+    refs = refs[:1]  # TODO: 테스트용
     for ref in refs:
         result = hair_fast.swap(
             face_img=source_path,

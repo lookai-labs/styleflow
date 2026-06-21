@@ -66,10 +66,12 @@ class SimulationResultSerializer(serializers.ModelSerializer):
         data['afterImage'] = request.build_absolute_uri(settings.MEDIA_URL + instance.generated_image_path) if instance.generated_image_path else ''
 
         applied_styles = []
-        if instance.makeup_mapping:
-            applied_styles.append({'type': 'makeup', 'name': instance.makeup_mapping.style_name})
-        if instance.hair_mapping:
-            applied_styles.append({'type': 'hair', 'name': instance.hair_mapping.style_name})
+        makeup_name = (instance.makeup_mapping.style_name if instance.makeup_mapping else None) or instance.makeup_name
+        hair_name = (instance.hair_mapping.style_name if instance.hair_mapping else None) or instance.hair_name
+        if makeup_name:
+            applied_styles.append({'type': 'makeup', 'name': makeup_name})
+        if hair_name:
+            applied_styles.append({'type': 'hair', 'name': hair_name})
         data['appliedStyles'] = applied_styles
 
         return data
