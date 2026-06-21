@@ -38,7 +38,8 @@ https://drive.google.com/file/d/1J0pn2AtsgL47kSRhwYIIl2gKTtWREd2G/view?usp=shari
 벡터DB를 불러오기 위해서 반드시 ollama가 설치 돼야 합니다.
 https://ollama.com/download/windows
 
-설치 후 bge-m3를 적용시킵니다. (아무 터미널에 입력)
+설치 후 bge-m3를 적용시킵니다. 
+(아무 터미널에 입력)
 ollama pull bge-m3
 
 

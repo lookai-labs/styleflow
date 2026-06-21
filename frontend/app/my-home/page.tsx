@@ -29,6 +29,17 @@ const STYLE_LABEL: Record<AppliedStyle["type"], string> = {
   outfit: "코디",   // API 응답 호환성 유지용
 };
 
+const STYLE_SUFFIX: Partial<Record<AppliedStyle["type"], string>> = {
+  makeup: "메이크업",
+  hair: "헤어",
+};
+
+const getDisplayName = (style: AppliedStyle): string => {
+  const suffix = STYLE_SUFFIX[style.type];
+  if (!suffix || style.name.endsWith(suffix)) return style.name;
+  return `${style.name} ${suffix}`;
+};
+
 
 export default function MyHomePage() {
   const router = useRouter();
@@ -143,7 +154,7 @@ export default function MyHomePage() {
                     {result.appliedStyles.map((style) => (
                       <div key={style.type} className="flex items-center gap-2 text-sm">
                         <span className="text-xs text-gray-400 w-12 flex-shrink-0">{STYLE_LABEL[style.type]}</span>
-                        <span className="font-medium text-gray-800">{style.name}</span>
+                        <span className="font-medium text-gray-800">{getDisplayName(style)}</span>
                       </div>
                     ))}
                   </div>

@@ -5,17 +5,17 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { Upload, Check, Camera, Sun, User, Image as ImageIcon } from "lucide-react";
+import { Upload, Check, Camera, Sun, User, Image as ImageIcon, Loader2 } from "lucide-react";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import api from "@/lib/api";
 
 const analysisSteps = [
-  "얼굴 영역 감지 중",
-  "얼굴형 분석 중",
-  "피부톤 감지 중",
-  "헤어스타일 추천 생성 중",
-  "메이크업 추천 생성 중",
-  "AI 시뮬레이션 준비 중",
+  "얼굴 영역 감지 중 (MediaPipe FaceMesh)",
+  "얼굴형 분석 중 (LightGBM)",
+  "피부톤 분석 중 (LightGBM)",
+  "헤어스타일 추천 생성 중 (Rule-based)",
+  "메이크업 추천 생성 중 (Rule-based)",
+  "스타일 분석 리포트 생성 중 (RAG + Gemini)",
 ];
 
 const FALLBACK_ANALYSIS_RESULT = {
@@ -116,7 +116,7 @@ function UploadPageInner() {
         }
       }
 
-      const apiCall = api.post("/analyze/", formData)
+      const apiCallPromise = api.post("/analyze/", formData)
         .then((res) => {
           localStorage.setItem("styleflow_analysis_result", JSON.stringify(res.data));
         })
@@ -125,24 +125,29 @@ function UploadPageInner() {
           localStorage.setItem("styleflow_analysis_result", JSON.stringify(FALLBACK_ANALYSIS_RESULT));
         });
 
-      const animation = new Promise<void>((resolve) => {
-        let step = 0;
+      // 1~5단계 자동 진행 (1초씩), 마지막 단계(RAG+Gemini)는 API 응답 대기
+      const LAST_AUTO_STEP = analysisSteps.length - 1;
+      const autoAdvance = new Promise<void>((resolve) => {
+        let step = 1;
         intervalRef.current = setInterval(() => {
-          step++;
           setCurrentStep(step);
-          if (step >= analysisSteps.length) {
+          if (step >= LAST_AUTO_STEP) {
             if (intervalRef.current) clearInterval(intervalRef.current);
             intervalRef.current = null;
             resolve();
           }
-        }, 800);
+          step++;
+        }, 1000);
       });
 
       try {
-        await Promise.all([apiCall, animation]);
+        await autoAdvance;
+        await apiCallPromise;
+        setCurrentStep(analysisSteps.length);
       } catch (e) {
         console.warn("분석 처리 중 예외가 발생해 fallback 결과로 진행합니다:", e);
         localStorage.setItem("styleflow_analysis_result", JSON.stringify(FALLBACK_ANALYSIS_RESULT));
+        setCurrentStep(analysisSteps.length);
       } finally {
         setTimeout(() => {
           router.push(`/result/${type}`);
@@ -215,26 +220,38 @@ function UploadPageInner() {
           </div>
         ) : (
           <Card className="p-8 border border-gray-200 bg-white">
-            <div className="space-y-6">
+            <div className="space-y-8">
               <div className="text-center">
                 <h2 className="text-2xl mb-2">스타일 분석 중</h2>
                 <p className="text-gray-600">AI가 사진을 분석하는 동안 잠시만 기다려 주세요...</p>
               </div>
               <Progress value={progress} className="h-2" />
-              <div className="space-y-3">
-                {analysisSteps.map((step, idx) => (
-                  <div
-                    key={idx}
-                    className={`flex items-center gap-3 ${idx <= currentStep ? "text-black" : "text-gray-400"}`}
-                  >
-                    {idx < currentStep ? (
-                      <Check className="w-5 h-5 text-green-600" />
-                    ) : (
-                      <div className="w-5 h-5 rounded-full border-2 border-current" />
-                    )}
-                    <span>{step}</span>
-                  </div>
-                ))}
+              <div className="space-y-2">
+                {analysisSteps.map((step, idx) => {
+                  const isCompleted = idx < currentStep;
+                  const isActive = idx === currentStep && currentStep < analysisSteps.length;
+                  return (
+                    <div
+                      key={idx}
+                      className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-300 ${
+                        isActive
+                          ? "bg-gray-50 text-black"
+                          : isCompleted
+                          ? "text-black"
+                          : "text-gray-400"
+                      }`}
+                    >
+                      {isCompleted ? (
+                        <Check className="w-5 h-5 text-green-500 flex-shrink-0" />
+                      ) : isActive ? (
+                        <Loader2 className="w-5 h-5 flex-shrink-0 animate-spin" />
+                      ) : (
+                        <div className="w-5 h-5 rounded-full border-2 border-current flex-shrink-0" />
+                      )}
+                      <span className={isActive ? "font-medium" : ""}>{step}</span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </Card>

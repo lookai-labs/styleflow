@@ -73,7 +73,7 @@ def _run_hair_inner(source_path: str, output_dir: str, reference_images: list | 
         result = hair_fast.swap(
             face_img=source_path,
             shape_img=ref['path'],
-            color_img=ref['path'],
+            color_img=source_path,
             align=True,
         )
         result_tensor = result[0] if isinstance(result, tuple) else result

@@ -219,7 +219,7 @@ export default function ResultPage() {
                           <img
                             src={item.image || undefined}
                             alt={item.name}
-                            className={`w-full h-56 object-cover transition-transform duration-500 group-hover:scale-105 ${category === 'hair' ? 'object-top' : 'object-center'}`}
+                            className={`w-full h-56 transition-transform duration-500 group-hover:scale-105 ${category === 'hair' ? 'object-contain' : 'object-cover object-center'}`}
                           />
                         </div>
                         <div className="p-4">

@@ -6,18 +6,25 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { Check, ChevronRight, MessageCircle } from "lucide-react";
+import { Check, ChevronRight, MessageCircle, Loader2 } from "lucide-react";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import api from "@/lib/api";
 
 /* ────────────────────────────────────────── */
 /*  상수                                       */
 /* ────────────────────────────────────────── */
-const LOADING_STEPS = [
-  "이미지 분석 중",
-  "스타일 패턴 학습 중",
-  "AI 시뮬레이션 생성 중",
-  "결과 최적화 중",
+const MAKEUP_LOADING_STEPS = [
+  "얼굴 랜드마크 감지 중 (dlib)",
+  "얼굴 마스크 추출 중 (MediaPipe FaceMesh)",
+  "메이크업 합성 중 (BeautyGAN)",
+  "최종 이미지 생성 중 (PostProcess)",
+];
+
+const HAIR_LOADING_STEPS = [
+  "얼굴 임베딩 중 (e4e + BiSeNet)",
+  "헤어 형태 합성 중 (SEAN + ShapeAdaptor)",
+  "헤어 색상 적용 중 (CLIP Blending)",
+  "최종 이미지 생성 중 (PostProcess)",
 ];
 
 type StyleType = "makeup" | "hair" | "outfit";
@@ -109,18 +116,22 @@ function SimulationFlowInner() {
   const results = ganResults[currentStyle] ?? FALLBACK_RESULTS[currentStyle] ?? [];
   const overallProgress = (currentStyleIndex / activeStyles.length) * 100;
 
-  const getMappingName = (category: StyleType): string => {
+  const getMappingName = (category: StyleType, idx: number = 0): string => {
     const mappings = category === "hair"
       ? analysisResult?.hair_mappings
       : analysisResult?.makeup_mappings;
-    return mappings?.[0]?.style_name ?? "";
+    const name = mappings?.[idx]?.style_name ?? "";
+    return category === "hair" && name && !name.endsWith("헤어")
+      ? `${name} 헤어`
+      : name;
   };
 
-  const displayResults = results.map((r) => ({
+  const displayResults = results.map((r, idx) => ({
     ...r,
-    name: getMappingName(currentStyle) || r.name,
+    name: getMappingName(currentStyle, idx) || r.name,
   }));
-  const loadingProgress = (loadingStep / LOADING_STEPS.length) * 100;
+  const currentLoadingSteps = currentStyle === "hair" ? HAIR_LOADING_STEPS : MAKEUP_LOADING_STEPS;
+  const loadingProgress = (loadingStep / currentLoadingSteps.length) * 100;
 
   /* ── 마운트 시 localStorage에서 상태 복원 ── */
   useEffect(() => {
@@ -139,8 +150,15 @@ function SimulationFlowInner() {
       try {
         const cached: SimulationResult[] = JSON.parse(cachedRaw);
         setGanResults((prev) => ({ ...prev, makeup: cached }));
-        // 결과가 있으면 로딩 단계를 건너뜀
         if (initialPhase === "loading") setPhase("results");
+      } catch {}
+    }
+
+    const cachedHairRaw = localStorage.getItem("styleflow_hair_results");
+    if (cachedHairRaw) {
+      try {
+        const cached: SimulationResult[] = JSON.parse(cachedHairRaw);
+        setGanResults((prev) => ({ ...prev, hair: cached }));
       } catch {}
     }
 
@@ -182,13 +200,14 @@ function SimulationFlowInner() {
     setLoadingStep(0);
     setLoadingError(null);
 
-    // 1~3단계는 8초 간격으로 진행, 4단계는 API 완료 시에만 표시
+    // 메이크업: 4초, 헤어: 8초 간격. 마지막 단계는 API 완료 시에만 표시
+    const stepInterval = currentStyle === "hair" ? 8000 : 4000;
     let step = 0;
     const interval = setInterval(() => {
       step += 1;
       setLoadingStep(step);
-      if (step >= LOADING_STEPS.length - 1) clearInterval(interval); // 3단계에서 멈춤
-    }, 2000);
+      if (step >= currentLoadingSteps.length - 1) clearInterval(interval);
+    }, stepInterval);
 
     // 실제 API 호출 (makeup만 지원, hair는 HairFastGAN 미구현으로 건너뜀)
     if (currentStyle === "makeup") {
@@ -226,7 +245,7 @@ function SimulationFlowInner() {
       api.post<{ results: { id: string; image: string; name: string }[] }>("/simulate/makeup/", formData)
         .then(({ data }) => {
           clearInterval(interval);
-          setLoadingStep(LOADING_STEPS.length);
+          setLoadingStep(currentLoadingSteps.length);
           const mapped: SimulationResult[] = data.results.map((r) => ({
             id: r.id,
             image: r.image,
@@ -244,7 +263,7 @@ function SimulationFlowInner() {
         .catch((err: unknown) => {
           clearInterval(interval);
           console.warn("메이크업 시뮬레이션 실패, fallback 결과로 진행:", err);
-          setLoadingStep(LOADING_STEPS.length);
+          setLoadingStep(currentLoadingSteps.length);
           const fallback = FALLBACK_RESULTS.makeup;
           setGanResults((prev) => ({ ...prev, makeup: fallback }));
           localStorage.setItem("styleflow_makeup_results", JSON.stringify(fallback));
@@ -306,7 +325,7 @@ function SimulationFlowInner() {
         })
         .then(({ data }) => {
           clearInterval(interval);
-          setLoadingStep(LOADING_STEPS.length);
+          setLoadingStep(currentLoadingSteps.length);
           const mapped: SimulationResult[] = data.results.map((r) => ({
             id: r.id,
             image: r.image,
@@ -314,6 +333,7 @@ function SimulationFlowInner() {
             description: "",
           }));
           setGanResults((prev) => ({ ...prev, hair: mapped }));
+          localStorage.setItem("styleflow_hair_results", JSON.stringify(mapped));
           setTimeout(() => {
             setPhase("results");
             setSelectedId(null);
@@ -323,7 +343,7 @@ function SimulationFlowInner() {
         .catch((err: unknown) => {
           clearInterval(interval);
           console.warn("헤어 시뮬레이션 실패, fallback 결과로 진행:", err);
-          setLoadingStep(LOADING_STEPS.length);
+          setLoadingStep(currentLoadingSteps.length);
           const fallback = FALLBACK_RESULTS.hair;
           setGanResults((prev) => ({ ...prev, hair: fallback }));
           setTimeout(() => {
@@ -350,6 +370,7 @@ function SimulationFlowInner() {
   /* ── AI 상담하기: 선택 카드 정보 + 전체 스타일 목록을 localStorage에 저장 후 이동 ── */
   const handleConsult = () => {
     const selectedResult = results.find((r) => r.id === selectedId);
+    const selectedIdx = results.findIndex((r) => r.id === selectedId);
     const ar = analysisResult as Record<string, unknown> | null;
     localStorage.setItem(
       "styleflow_consultation",
@@ -359,7 +380,7 @@ function SimulationFlowInner() {
         style: currentStyle,
         allStyles: activeStyles.join(","),
         currentStyleIndex,
-        styleName: getMappingName(currentStyle),
+        styleName: getMappingName(currentStyle, selectedIdx >= 0 ? selectedIdx : 0),
         simulationResultId: null,
         hairMappings: ar?.hair_mappings ?? [],
         makeupMappings: ar?.makeup_mappings ?? [],
@@ -389,7 +410,8 @@ function SimulationFlowInner() {
         }
       }
       apiCalledRef.current = false; // 다음 스타일 단계를 위해 반드시 초기화
-      setSelectedStyleNames((prev) => ({ ...prev, [currentStyle]: getMappingName(currentStyle) }));
+      const confirmIdx = results.findIndex((r) => r.id === selectedId);
+      setSelectedStyleNames((prev) => ({ ...prev, [currentStyle]: getMappingName(currentStyle, confirmIdx >= 0 ? confirmIdx : 0) }));
       setCompletedStyles((prev) => [...prev, currentStyle]);
       setCurrentStyleIndex(next);
       setPhase("loading");
@@ -401,7 +423,8 @@ function SimulationFlowInner() {
         aiModifiedData?.selectedId === selectedId && aiModifiedData?.aiImage
           ? aiModifiedData.aiImage
           : selectedResult?.image ?? "";
-      const finalStyleNames = { ...selectedStyleNames, [currentStyle]: getMappingName(currentStyle) };
+      const finalIdx = results.findIndex((r) => r.id === selectedId);
+      const finalStyleNames = { ...selectedStyleNames, [currentStyle]: getMappingName(currentStyle, finalIdx >= 0 ? finalIdx : 0) };
       localStorage.setItem(
         "styleflow_final_result",
         JSON.stringify({
@@ -413,6 +436,7 @@ function SimulationFlowInner() {
       );
       // 시뮬레이션 진행 캐시 정리
       localStorage.removeItem("styleflow_makeup_results");
+      localStorage.removeItem("styleflow_hair_results");
       localStorage.removeItem("styleflow_selected_id");
       localStorage.removeItem("styleflow_selected_makeup_image");
       router.push("/simulation-complete");
@@ -479,22 +503,32 @@ function SimulationFlowInner() {
 
                 <Progress value={loadingProgress} className="h-2" />
 
-                <div className="space-y-3">
-                  {LOADING_STEPS.map((step, idx) => (
-                    <div
-                      key={idx}
-                      className={`flex items-center gap-3 transition-colors ${
-                        idx < loadingStep ? "text-black" : "text-gray-400"
-                      }`}
-                    >
-                      {idx < loadingStep ? (
-                        <Check className="w-5 h-5 text-green-600 flex-shrink-0" />
-                      ) : (
-                        <div className="w-5 h-5 rounded-full border-2 border-current flex-shrink-0" />
-                      )}
-                      <span>{step}</span>
-                    </div>
-                  ))}
+                <div className="space-y-2">
+                  {currentLoadingSteps.map((step, idx) => {
+                    const isCompleted = idx < loadingStep;
+                    const isActive = idx === loadingStep && loadingStep < currentLoadingSteps.length;
+                    return (
+                      <div
+                        key={idx}
+                        className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-300 ${
+                          isActive
+                            ? "bg-gray-50 text-black"
+                            : isCompleted
+                            ? "text-black"
+                            : "text-gray-400"
+                        }`}
+                      >
+                        {isCompleted ? (
+                          <Check className="w-5 h-5 text-green-500 flex-shrink-0" />
+                        ) : isActive ? (
+                          <Loader2 className="w-5 h-5 flex-shrink-0 animate-spin" />
+                        ) : (
+                          <div className="w-5 h-5 rounded-full border-2 border-current flex-shrink-0" />
+                        )}
+                        <span className={isActive ? "font-medium" : ""}>{step}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
