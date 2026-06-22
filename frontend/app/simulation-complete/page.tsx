@@ -47,7 +47,11 @@ export default function SimulationCompletePage() {
     if (!authorized || !finalResult || autoSaveCalledRef.current) return;
     autoSaveCalledRef.current = true;
 
-    const afFilename = (finalResult.afterImage ?? '').split('/').pop() ?? '';
+    const afterUrl = finalResult.afterImage ?? '';
+    const mediaIdx = afterUrl.indexOf('/media/');
+    const afFilename = mediaIdx !== -1
+      ? afterUrl.slice(mediaIdx + '/media/'.length)
+      : afterUrl.split('/').pop() ?? '';
     const faceDataUrl = finalResult.beforeImage?.startsWith('data:')
       ? finalResult.beforeImage
       : localStorage.getItem('styleflow_face_image') ?? '';

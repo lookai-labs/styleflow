@@ -371,7 +371,19 @@ def _call_gemini_image_edit(payload: dict[str, Any]) -> str:
         ),
     )
 
-    for part in response.candidates[0].content.parts:
+    candidates = response.candidates
+    if not candidates:
+        raise ValueError("Gemini 응답에 candidates가 없습니다.")
+
+    candidate = candidates[0]
+    finish_reason = getattr(candidate, "finish_reason", None)
+
+    if candidate.content is None:
+        raise ValueError(
+            f"Gemini 이미지 응답 content가 비어 있습니다. (finish_reason={finish_reason})"
+        )
+
+    for part in candidate.content.parts:
         if part.inline_data:
             result_mime = part.inline_data.mime_type or "image/png"
             return _save_image_to_media(part.inline_data.data, result_mime)
@@ -408,7 +420,19 @@ def call_gemini_image_synthesis(source_url: str, prompt_text: str) -> str:
         ),
     )
 
-    for part in response.candidates[0].content.parts:
+    candidates = response.candidates
+    if not candidates:
+        raise ValueError("Gemini 응답에 candidates가 없습니다.")
+
+    candidate = candidates[0]
+    finish_reason = getattr(candidate, "finish_reason", None)
+
+    if candidate.content is None:
+        raise ValueError(
+            f"Gemini 이미지 응답 content가 비어 있습니다. (finish_reason={finish_reason})"
+        )
+
+    for part in candidate.content.parts:
         if part.inline_data:
             result_mime = part.inline_data.mime_type or "image/png"
             return _save_image_to_media(part.inline_data.data, result_mime)
