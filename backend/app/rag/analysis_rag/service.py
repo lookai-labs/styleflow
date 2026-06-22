@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from backend.app.rag.rag_core.retriever import retrieve_many_docs
-from backend.app.rag.rag_core.generator import generate_analysis_answer
+from backend.app.rag.rag_core.generator import (
+    generate_analysis_answer,
+    get_chat_model,
+    invoke_with_retry,
+    normalize_model_content,
+)
 from backend.app.rag.rag_core.schemas import AnalysisGenerationInput, RetrievalQuery, RetrievalResult
+from backend.app.rag.analysis_rag.prompts import build_combined_analysis_generation_prompt
 
 
 CATEGORY_HAIR = "hair"
@@ -78,7 +85,7 @@ def _build_hair_retrieval_queries(
                 face_shape=face_shape,
                 face_proportion=face_proportion,
                 style_code=style_code,
-                k=3,
+                k=1,
             )
         )
         style_infos.append(
@@ -126,7 +133,7 @@ def _build_makeup_retrieval_queries(
                 personal_color=personal_color,
                 makeup_group=str(makeup_group) if makeup_group else None,
                 style_code=style_code,
-                k=3,
+                k=1,
             )
         )
         style_infos.append(
@@ -294,6 +301,62 @@ def _generate_makeup_analysis_summary(
         )
 
 
+def _generate_combined_analysis_summary(
+    *,
+    gender: str,
+    face_shape: str,
+    face_proportion: str,
+    personal_color: str | None,
+    covered_hair_pairs: list[tuple[dict[str, Any], RetrievalResult]],
+    covered_makeup_pairs: list[tuple[dict[str, Any], RetrievalResult]],
+) -> tuple[str, str | None]:
+    """
+    헤어와 메이크업 분석을 단일 Gemini 호출로 생성한다.
+    파싱 실패 또는 예외 발생 시 개별 호출로 fallback한다.
+    """
+    try:
+        prompt = build_combined_analysis_generation_prompt(
+            gender=gender,
+            face_shape=face_shape,
+            face_proportion=face_proportion,
+            personal_color=personal_color,
+            covered_hair_pairs=covered_hair_pairs,
+            covered_makeup_pairs=covered_makeup_pairs,
+        )
+        chat_model = get_chat_model()
+        response = invoke_with_retry(chat_model=chat_model, prompt=prompt)
+        content = normalize_model_content(response.content)
+
+        hair_match = re.search(r'\[헤어 분석\]\s*(.*?)\s*\[/헤어 분석\]', content, re.DOTALL)
+        makeup_match = re.search(r'\[메이크업 분석\]\s*(.*?)\s*\[/메이크업 분석\]', content, re.DOTALL)
+
+        hair_summary = hair_match.group(1).strip() if hair_match else None
+        makeup_summary = makeup_match.group(1).strip() if makeup_match else None
+
+        if hair_summary:
+            return hair_summary, makeup_summary
+
+        logger.warning("통합 분석 파싱 실패, 개별 분석으로 fallback")
+    except Exception as exc:
+        logger.warning("통합 분석 생성 실패, 개별 분석으로 fallback: %s", exc, exc_info=True)
+
+    hair_summary = _generate_hair_analysis_summary(
+        gender=gender,
+        face_shape=face_shape,
+        face_proportion=face_proportion,
+        personal_color=personal_color,
+        covered_hair_pairs=covered_hair_pairs,
+    )
+    makeup_summary = _generate_makeup_analysis_summary(
+        gender=gender,
+        face_shape=face_shape,
+        face_proportion=face_proportion,
+        personal_color=personal_color,
+        covered_makeup_pairs=covered_makeup_pairs,
+    )
+    return hair_summary, makeup_summary
+
+
 def generate_analysis_result(
     gender: str,
     face_shape: str,
@@ -365,20 +428,24 @@ def generate_analysis_result(
         makeup_retrieval_results,
     )
 
-    hair_analysis_summary = _generate_hair_analysis_summary(
-        gender=gender,
-        face_shape=face_shape,
-        face_proportion=face_proportion,
-        personal_color=personal_color,
-        covered_hair_pairs=covered_hair_pairs,
-    )
-    makeup_analysis_summary = _generate_makeup_analysis_summary(
-        gender=gender,
-        face_shape=face_shape,
-        face_proportion=face_proportion,
-        personal_color=personal_color,
-        covered_makeup_pairs=covered_makeup_pairs,
-    )
+    if covered_makeup_pairs:
+        hair_analysis_summary, makeup_analysis_summary = _generate_combined_analysis_summary(
+            gender=gender,
+            face_shape=face_shape,
+            face_proportion=face_proportion,
+            personal_color=personal_color,
+            covered_hair_pairs=covered_hair_pairs,
+            covered_makeup_pairs=covered_makeup_pairs,
+        )
+    else:
+        hair_analysis_summary = _generate_hair_analysis_summary(
+            gender=gender,
+            face_shape=face_shape,
+            face_proportion=face_proportion,
+            personal_color=personal_color,
+            covered_hair_pairs=covered_hair_pairs,
+        )
+        makeup_analysis_summary = None
 
     hair_docs_count = sum(r.retrieved_count for r in hair_retrieval_results)
     makeup_docs_count = sum(r.retrieved_count for r in makeup_retrieval_results)

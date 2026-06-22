@@ -59,14 +59,12 @@ pj_styleflow/
 │   │   ├── auth.ts             ← localStorage 토큰 저장/조회
 │   │   └── utils.ts
 │   └── public/
-│       └── reference/
-│           └── makeup/         ← 메이크업 스타일 미리보기 이미지 (MS1~3.png)
-│                                  현재: 사용자 화면 표시 전용 정적 에셋
-│                                  [향후] 분석 세션 기반 스타일 매핑 로직 추가 시,
-│                                  MakeupStyle 모델에 gan_image_path 필드를 추가해
-│                                  백엔드 gan_models 경로와 DB를 연결하는 구조로 통합 예정.
-│                                  그 시점에 이 미리보기 이미지도 MakeupStyle.image_url
-│                                  하나로 통합 가능
+│       ├── reference/
+│       │   └── makeup/         ← BeautyGAN 폴백용 레퍼런스 이미지 (MS1~3.png)
+│       └── images/
+│           ├── hair/           ← 헤어스타일 썸네일 (hair_styles.image_url 경로)
+│           └── makeup/         ← 메이크업 썸네일 (makeup_styles.image_url 경로)
+│               └── temp/       ← 남성 메이크업 임시 이미지 (male-{season}-{n}.png)
 │
 └── backend/                    ← Django 5.2 + DRF
     ├── app/                    ← 메인 Django 앱
@@ -84,30 +82,41 @@ pj_styleflow/
     │   │   ├── views.py        ← simulate_hair
     │   │   ├── urls.py
     │   │   └── services.py
-    │   └── makeup/             ← BeautyGAN
-    │       ├── views.py        ← simulate_makeup
-    │       ├── urls.py
-    │       └── services.py
+    │   ├── makeup/             ← BeautyGAN
+    │   │   ├── views.py        ← simulate_makeup
+    │   │   ├── urls.py
+    │   │   └── services.py
+    │   └── rag/                ← RAG 모듈
+    │       ├── analysis_rag/   ← 분석 결과 요약 (generate_analysis_result)
+    │       ├── chatbot_rag/    ← LangGraph 챗봇 (run_chatbot, retouch)
+    │       ├── crawler/        ← 데이터 수집
+    │       ├── rag_core/       ← ChromaDB 검색/생성 공통 유틸
+    │       └── vector_index/   ← 임베딩 및 벡터 인덱스 빌드
+    ├── app/
+    │   └── face_analysis/      ← Face_Analysis 패키지 (diagnose, Recommend)
+    │       ├── diagnose.py     ← 얼굴형 + 삼정 + 퍼스널컬러 통합 진단
+    │       ├── Recommend.py    ← 성별 기반 헤어/메이크업 추천 (hair.md, makeup.xlsx)
+    │       ├── shape/          ← 얼굴형 분류 모델
+    │       └── skin/           ← 퍼스널컬러 모델 번들
     ├── gan_models/
     │   ├── HairFastGAN-p310/
-    │   │   └── imgs/
-    │   │       └── hair/       ← HairFastGAN 레퍼런스 이미지 (MH1~3.jpg)
+    │   │   └── imgs/hair/      ← 폴백용 레퍼런스 이미지 (MH1~3.jpg)
     │   └── BeautyGAN-master-p310/
-    │       └── imgs/
-    │           └── makeup/     ← BeautyGAN 레퍼런스 이미지 (MS1~3.png)
-    │                              현재: services.py에 REFERENCE_IMAGES로 하드코딩
-    │                              [향후] 스타일 매핑 로직 추가 시 MakeupStyle.gan_image_path
-    │                              필드로 DB에서 경로를 관리하도록 변경 예정
+    │       └── imgs/makeup/    ← 폴백용 레퍼런스 이미지 (MS1~3.png)
     ├── media/                  ← 런타임 생성 (MEDIA_ROOT, git 제외)
     │   ├── analyses/           ← 사용자가 업로드한 원본 사진
     │   └── simulations/        ← GAN 결과 이미지
     ├── styleflow/
     │   ├── settings.py
     │   └── urls.py
+    ├── vector_data/            ← ChromaDB 벡터 인덱스 (git 제외)
+    │   └── chroma/
     ├── manage.py
-    ├── requirements.txt
+    ├── run.bat
     ├── .env
     └── .env.example
+
+requirements.txt               ← 루트(pj_styleflow/)에 위치 (backend/ 아님)
 ```
 
 ---
@@ -175,8 +184,11 @@ SIMPLE_JWT = {
 
 | Method | URL | 설명 |
 |--------|-----|------|
+| POST | `/analyze/` | 얼굴 분석 → 스타일 추천 → DB 저장 → 결과 반환 |
 | POST | `/simulate/makeup/` | BeautyGAN 메이크업 시뮬레이션 |
-| POST | `/simulate/save/` | 시뮬레이션 결과 저장 |
+| POST | `/simulate/hair/` | HairFastGAN 헤어 시뮬레이션 |
+| POST | `/simulate/save/` | 시뮬레이션 결과 저장 (is_saved=false로 자동 생성) |
+| PATCH | `/simulate/save/{id}/` | 저장 확정 (is_saved=true) |
 | GET | `/saved-results/` | 내 저장 결과 목록 |
 | DELETE | `/saved-results/{id}/` | 저장 결과 삭제 (is_saved=false) |
 | GET | `/health/` | 서버 상태 확인 |
@@ -191,11 +203,11 @@ SIMPLE_JWT = {
 | GET/PUT/DELETE | `/admin/makeup-styles/{id}/` | 메이크업스타일 수정/삭제 |
 | GET | `/admin/dashboard/` | 통계 (사용자 수, 세션 수, 분포) |
 | GET | `/admin/feedback/` | 피드백 목록 (`?target_type=hair\|makeup`) |
-| GET | `/users/` | 전체 사용자 목록 |
-| GET | `/analyses/` | 분석 세션 목록 (`?user_id=`, `?anomaly=true`) |
-| GET | `/simulation-results/` | 시뮬레이션 결과 목록 |
-| DELETE | `/simulation-results/{id}/` | 결과 삭제 |
-| GET | `/style-mappings/` | 추천 결과 목록 |
+| GET | `/admin/users/` | 전체 사용자 목록 |
+| GET | `/admin/analyses/` | 분석 세션 목록 (`?user_id=`, `?anomaly=true`) |
+| GET | `/admin/simulation-results/` | 시뮬레이션 결과 목록 |
+| DELETE | `/admin/simulation-results/{id}/` | 결과 삭제 |
+| GET | `/admin/style-mappings/` | 추천 결과 목록 |
 
 > **페이지네이션**: 모든 목록 API는 `{ count, next, previous, results: [...] }` 형태로 반환 (PAGE_SIZE=20)
 
@@ -205,17 +217,20 @@ SIMPLE_JWT = {
 
 ```python
 class User                # users — nickname, password, gender, role, created_at
-class HairStyle           # hair_styles — hair_code, style_name, image_url
-class MakeupStyle         # makeup_styles — style_name, image_url
+class HairStyle           # hair_styles — hair_code(m-/f- 접두어), style_name, image_url
+class MakeupStyle         # makeup_styles — style_code(null, unique 없음), style_name, image_url
+                          #   ※ 남성 메이크업: 동일 style_code로 3행 (이미지 3장)
+                          #   ※ 여성 메이크업: 12개 스타일, 남성: 4개 시즌 × 3행 = 12행
 class AnalysisSession     # analysis_sessions — user_id, image_path, face_shape, face_point,
                           #   skin_tone, skin_lab_b, ratio_*, result(JSON), created_at
 class StyleMappingList    # style_mapping_list — user_id, analysis_session_id, type,
                           #   hair_style_id, makeup_style_id, style_name, created_at
 class SimulationResult    # simulation_results — user_id, analysis_session_id,
                           #   hair_mapping_id, makeup_mapping_id,
-                          #   generated_image_path, is_saved, created_at
+                          #   generated_image_path, is_saved,
+                          #   makeup_name, hair_name, created_at
 class UserFeedback        # user_feedback — user_id, simulation_result_id,
-                          #   target_type, feedback_text, applied_style_key, created_at
+                          #   target_type, user_chat, ai_chat, applied_style_key, img_url, created_at
 ```
 
 **주의:** `User`는 `models.Model`만 상속 (AbstractBaseUser 미사용)  
@@ -223,11 +238,11 @@ DRF `IsAuthenticated` 호환을 위해 `is_authenticated = property(lambda self:
 
 ---
 
-## 6-1. BeautyGAN 메이크업 시뮬레이션
+## 6-1. GAN 시뮬레이션 (메이크업 + 헤어)
 
-TensorFlow 2.13 기반 BeautyGAN 모델로 원본 사진에 메이크업 전이.
+### BeautyGAN 메이크업
 
-**실행 환경:** conda `p311t213_styleflow_test`
+TensorFlow 2.13 기반. 원본 사진에 메이크업 전이.
 
 **처리 흐름:**
 ```
@@ -238,12 +253,24 @@ TensorFlow 2.13 기반 BeautyGAN 모델로 원본 사진에 메이크업 전이.
     ↓ Affine 역변환 + Feathered 블렌딩 → 원본 해상도 결과 이미지
 ```
 
-**레퍼런스 메이크업** (imgs/makeup/):
-| 파일 | 스타일명 |
-|------|----------|
-| MS1.png | 웜 코랄 메이크업 |
-| MS2.png | 소프트 뉴트럴 |
-| MS3.png | 로즈 글로우 |
+### HairFastGAN 헤어
+
+PyTorch 기반. 레퍼런스 헤어스타일 이미지를 원본 얼굴에 합성.
+
+### 동적 레퍼런스 이미지
+
+분석 추천 결과(`hair_mappings`/`makeup_mappings`)의 `image_url`을 GAN 레퍼런스로 사용.
+
+```
+프론트엔드: localStorage에서 analysis_result 직접 파싱
+    → reference_images JSON을 formData에 포함해 API 전송
+
+백엔드 services.py: _resolve_reference_images()
+    → URL(/images/...) → frontend/public/ 로컬 경로 매핑
+    → 파일 없거나 image_url 없으면 REFERENCE_IMAGES(MH1~3/MS1~3) 폴백
+```
+
+**주의:** localStorage 상태 대신 직접 파싱해야 함 — useEffect 타이밍 race condition으로 상태가 null일 수 있음.
 
 ---
 
@@ -261,20 +288,46 @@ TensorFlow 2.13 기반 BeautyGAN 모델로 원본 사진에 메이크업 전이.
 }
 ```
 
-### 백엔드 requirements.txt
+### 백엔드 환경 (`p310_pj_styleflow` — Python 3.10)
+
+> 전체 목록은 루트 `requirements.txt` 참조. 아래는 주요 패키지.
+
 ```
-numpy==1.24.3
-tensorflow==2.13.0
-dlib==19.24.2
+# 이미지/AI
+numpy==1.26.4
 opencv-contrib-python==4.8.1.78
-mediapipe==0.10.9
+Pillow==10.0.0
+mediapipe==0.10.9          ← Solutions API (FaceMesh) 사용, Tasks API 아님
+tensorflow-intel==2.13.0   ← conda 별도 설치
+dlib==19.24.1              ← conda-forge 별도 설치
+
+# 머신러닝
+scikit-learn==1.7.2        ← 1.2.2→1.7.2 업그레이드 (Face_Analysis 모델 호환)
+lightgbm==4.6.0            ← Face_Analysis 얼굴형/퍼스널컬러 분류
+openpyxl==3.1.5            ← Face_Analysis makeup.xlsx 파싱
+scipy==1.10.1
+
+# Django
 Django==5.2.14
 djangorestframework==3.17.1
 django-cors-headers==4.9.0
+djangorestframework-simplejwt==5.4.0
 python-dotenv==1.2.2
 mysqlclient==2.2.8
-Pillow==12.2.0
-djangorestframework-simplejwt==5.4.0
+
+# RAG
+chromadb==1.5.9
+langchain-chroma==1.1.0
+langchain-google-genai==4.2.5
+langgraph==1.2.5
+sentence-transformers==3.0.1
+transformers==4.44.2
+protobuf==6.33.6           ← chromadb 기준, mediapipe와 충돌 → monkey patch로 해결
+
+# GAN
+torch==1.13.1              ← 별도 설치 (CPU: whl/cpu, GPU: cu117)
+torchvision==0.14.1        ← 별도 설치
+clip==1.0                  ← git 소스 별도 설치
 ```
 
 ### 환경변수 (`backend/.env`)
@@ -309,8 +362,8 @@ npm run dev       # → http://localhost:3000
 ### 백엔드
 
 ```bash
-# BeautyGAN 전용 conda 환경 활성화 필수
-conda activate p311t213_styleflow_test
+# 통합 conda 환경 활성화 필수
+conda activate p310_pj_styleflow
 
 cd backend
 pip install -r requirements.txt   # 최초 1회
@@ -345,8 +398,24 @@ python manage.py runserver --noreload
         → AuthContext.login() 호출 → localStorage 저장 + Context 상태 업데이트
         → role='admin'이면 /admin, 일반 사용자면 / 로 이동
 
+얼굴 분석
+    [upload/page.tsx]
+    POST /api/analyze/ (multipart: face_image)
+        → Face_Analysis: diagnose() → 얼굴형 + 삼정 + 퍼스널컬러
+        → Recommend: recommend(diagnosis, gender) → 헤어/메이크업 스타일명 목록
+        → HairStyle DB 조회 (style_name + hair_code prefix로 gender 필터)
+        → RAG: generate_analysis_result() → 분석 요약 텍스트
+        → AnalysisSession 생성 (face_shape, face_point, skin_tone, 삼정 비율)
+        → StyleMappingList 생성 (헤어 3개 + 메이크업 3개)
+        → 응답: { hair_analysis_summary, makeup_analysis_summary, face_shape,
+                  skin_tone, personal_color, analysis_session_id,
+                  hair_mappings: [{id, style_name, style_code, image_url}],
+                  makeup_mappings: [{id, style_name, style_code, image_url}] }
+        → localStorage: styleflow_analysis_result 저장
+        → [result/face/page.tsx]
+
 사진 업로드 + 시뮬레이션
-    [upload/page.tsx] → StylingSelectionModal에서 시뮬레이션 유형 선택
+    [result/face/page.tsx] → 시뮬레이션 시작 버튼 → StylingSelectionModal
         → [simulation-flow/page.tsx]
 
     ── 케이스 1: 메이크업만 ──
@@ -381,10 +450,11 @@ python manage.py runserver --noreload
 
 결과 저장
     [simulation-complete/page.tsx]
-    POST /api/simulate/save/ (multipart)
+    POST /api/simulate/save/ (multipart: before_image, after_image, makeup_name, hair_name, is_saved)
         → AnalysisSession 생성 (face_shape, skin_tone 등 분석 필드는 전부 null)
-        + SimulationResult(is_saved=True) DB 저장
-        → 실제 AI 분석 없이 이미지 경로만 기록하는 구조
+        + SimulationResult(is_saved=True, makeup_name, hair_name) DB 저장
+        → 실제 AI 분석 없이 이미지 경로 + 스타일명만 기록하는 구조
+        → authorized 가드 필수 (마운트 시 자동 호출 — JWT 준비 전 실행 방지)
 
 마이홈 조회
     [my-home/page.tsx]
@@ -412,37 +482,13 @@ python manage.py runserver --noreload
 
 ---
 
-## 11. DB 연동 시 이미지 경로 정리 유의사항
-
-현재 스타일 레퍼런스 이미지가 두 곳에 중복 관리되고 있음.
-
-| 위치 | 용도 |
-|------|------|
-| `frontend/public/reference/makeup\|hair/` | 프론트 FALLBACK_RESULTS 미리보기용 |
-| `backend/gan_models/.../imgs/makeup\|hair/` | GAN 추론 레퍼런스용 |
-
-**DB 연동 후 개선 방향:**
-- 이미지를 Django `media/styles/`에 한 번만 업로드
-- DB `MakeupStyle.image_url` / `HairStyle.image_url` 에 해당 URL 저장
-- 백엔드: `MEDIA_ROOT` 기준 파일시스템 경로로 GAN에 전달
-- 프론트엔드: `image_url` (URL)을 미리보기에 직접 사용
-- 이 시점에 `frontend/public/reference/` 정적 이미지와 `backend/.../imgs/` 중복 제거 가능
-
----
 
 ## 12. 향후 확장 포인트
 
-- **실제 AI 얼굴 분석 연동**: 업로드 후 face_shape, skin_tone 등 자동 분석
-- **스타일 추천 로직**: analysis_sessions 결과 기반으로 style_mapping_list 자동 생성
 - **페이지네이션 UI**: 관리자 페이지 목록에서 20개 초과 시 페이지 버튼 추가
 - **배포**: 프론트엔드 Vercel, 백엔드 EC2, DB RDS(MariaDB)
-- **마이홈 appliedStyles**: 현재 스타일명 미표시 (의도적 보류) — 저장 시 `StyleMappingList` 레코드 생성 후 `SimulationResult.makeup_mapping` FK 연결 필요. serializer가 `makeup_mapping=None`이면 `appliedStyles: []` 반환.
-- **HairFastGAN 연동**: 모델 미준비로 제외된 상태. 이식 작업 순서:
-  1. `backend/api/hairgan_service.py` 작성 (`beautygan_service.py`와 동일 구조)
-  2. `POST /api/simulate/hair/` 엔드포인트 추가 (`views.py`, `urls.py`)
-  3. 헤어 레퍼런스 이미지 3장을 `frontend/public/reference/hair/`에 추가
-  4. `simulation-flow/page.tsx` 로딩 useEffect `else` 브랜치를 실제 API 호출로 교체
-  5. `StylingSelectionModal`에서 헤어 선택지 활성화
+- **남성 메이크업 실제 이미지**: `/images/makeup/temp/` 경로에 실제 이미지 파일 추가 필요
+- **`refs[:1]` 제거**: `backend/app/hair/services.py` 테스트용 코드 — 프로덕션 배포 전 반드시 삭제
 
 ---
 
@@ -501,11 +547,15 @@ useEffect(() => {
 | 키 | 내용 | 삭제 시점 |
 |----|------|----------|
 | `styleflow_face_image` | 업로드한 얼굴 사진 (압축 JPEG dataURL) | 없음 (덮어씀) |
+| `styleflow_analysis_result` | `/analyze/` 전체 응답 JSON (hair/makeup_mappings 포함) | 없음 (덮어씀) |
 | `styleflow_makeup_results` | GAN 결과 3장 `[{id, image, name}]` | 시뮬레이션 시작 / 최종 확정 |
 | `styleflow_selected_id` | 선택된 결과 카드 id | 최종 확정 |
-| `styleflow_final_result` | `{beforeImage, afterImage, completedStyles}` | 없음 (덮어씀) |
+| `styleflow_selected_makeup_image` | 메이크업 확정 이미지 (헤어 단계 Before 입력용) | 최종 확정 |
+| `styleflow_consultation` | AI 상담 진입 시 context (style, mappings 등) | 없음 (덮어씀) |
+| `styleflow_hair_results` | 헤어 GAN 결과 3장 `[{id, image, name}]` | 시뮬레이션 시작 / 최종 확정 |
+| `styleflow_final_result` | `{beforeImage, afterImage, completedStyles, styleNames:{makeup,hair}}` | 없음 (덮어씀) |
 
-흐름: `/upload` → `styleflow_face_image` 저장 → `/simulation-flow` → `styleflow_makeup_results` 저장 → `/simulation-complete` → `styleflow_final_result` 저장
+흐름: `/upload` → `styleflow_face_image` + `styleflow_analysis_result` 저장 → `/result/face` → `/simulation-flow` → `styleflow_makeup_results` 저장 → `/simulation-complete` → `styleflow_final_result` 저장
 
 ---
 
@@ -793,6 +843,67 @@ anaconda3/envs/p310_pj_styleflow/Lib/site-packages/transformers/dependency_versi
 
 ---
 
+### [2026-06-20] Face_Analysis 통합 + 시뮬레이션 동적 레퍼런스
+
+#### ① 헤어 gender 필터 — 같은 스타일명이 남/여 모두 존재
+
+**문제:** "울프", "그런지" 등 스타일명이 남성(m-)과 여성(f-) DB에 모두 존재 → 잘못된 성별 스타일 참조.
+
+**해결:** `hair_code__startswith` 필터로 성별 구분.
+```python
+hair_code_prefix = 'm-' if gender == 'male' else 'f-'
+HairStyle.objects.filter(style_name=n, hair_code__startswith=hair_code_prefix).first()
+```
+
+---
+
+#### ② 남성 메이크업 이미지 3장 구조
+
+**배경:** 여성은 메이크업당 1장이지만 남성도 3장 결과를 보여줘야 함.
+
+**해결:** `MakeupStyle.style_code`의 `unique=True` 제거, 남성 메이크업 4개 시즌별로 동일 style_code 행 3개씩 추가 (총 12행).
+
+**migration:** `0007_remove_makeup_style_code_unique.py`
+
+**views.py 분기:**
+```python
+if gender == 'male':
+    makeup_style_objs = list(MakeupStyle.objects.filter(style_name=style_name))
+else:
+    obj = MakeupStyle.objects.filter(style_name=style_name).first()
+    makeup_style_objs = [obj] if obj else []
+```
+
+---
+
+#### ③ 시뮬레이션 동적 레퍼런스 이미지 — useEffect race condition
+
+**문제:** `simulation-flow/page.tsx`에서 `analysisResult` 상태를 사용해 레퍼런스 이미지를 구성했으나 마운트 시 `setAnalysisResult()`가 아직 반영되지 않아 항상 null → 기존 하드코딩 이미지 사용.
+
+**해결:** 상태 대신 localStorage 직접 파싱.
+```ts
+// ❌ 상태 사용 (null일 수 있음)
+const refs = (analysisResult?.makeup_mappings ?? [])...
+
+// ✅ localStorage 직접 파싱 (항상 동기 읽기)
+const raw = localStorage.getItem("styleflow_analysis_result");
+const ar = raw ? JSON.parse(raw) : null;
+const refs = (ar?.makeup_mappings ?? [])...
+```
+
+**백엔드 연동:**
+- `makeup/views.py`, `hair/views.py`: `reference_images` JSON 파싱 후 service로 전달
+- `makeup/services.py`, `hair/services.py`: `_resolve_reference_images()` — `/images/...` URL → `frontend/public/` 로컬 경로 매핑, 없으면 REFERENCE_IMAGES 폴백
+
+---
+
+#### ④ result 페이지 UI 개선
+
+- 헤어 카드 이미지: `object-cover object-center` → `object-top` (머리카락 전체 노출)
+- 헤어 카드 이름: `{style_name}` → `{style_name} 헤어` suffix 추가
+
+---
+
 ### [2026-06-19] AI 채팅 응답 대기 중 타이핑 인디케이터 애니메이션 추가
 
 **문제:** 유저가 메시지를 전송한 후 AI 응답이 생성되는 동안 (API 호출 + 800ms 딜레이) 채팅창에 아무런 피드백이 없어 응답이 오고 있는지 알 수 없는 UX 문제.
@@ -821,3 +932,191 @@ anaconda3/envs/p310_pj_styleflow/Lib/site-packages/transformers/dependency_versi
 ```
 
 에러/폴백 경로에서도 동일하게 800ms 후 `setIsTyping(false)` 처리하여 인디케이터가 남지 않도록 함.
+
+---
+
+### [2026-06-21] UI 개선 + SimulationResult 스타일명 저장
+
+#### ① 분석 로딩 UI — 6단계 + 모델명 표시 (`upload/page.tsx`)
+
+사용자가 업로드 후 분석 대기 중 어떤 모델이 실행 중인지 확인할 수 있도록 단계별 텍스트 개선.
+
+```ts
+const analysisSteps = [
+  "얼굴 영역 감지 중 (MediaPipe FaceMesh)",
+  "얼굴형 분석 중 (LightGBM)",
+  "피부톤 분석 중 (LightGBM)",
+  "헤어스타일 추천 생성 중 (Rule-based)",
+  "메이크업 추천 생성 중 (Rule-based)",
+  "스타일 분석 리포트 생성 중 (RAG + Gemini)",
+];
+```
+
+Loader2 스피너 + 순차 로딩 (`autoAdvance` 타이머 + `apiCallPromise` 완료 시 마지막 단계로 강제 진입) 구현.
+
+---
+
+#### ② 시뮬레이션 로딩 UI — 메이크업/헤어 별도 4단계 (`simulation-flow/page.tsx`)
+
+```ts
+const MAKEUP_LOADING_STEPS = [
+  "얼굴 랜드마크 감지 중 (dlib)",
+  "얼굴 마스크 추출 중 (MediaPipe FaceMesh)",
+  "메이크업 합성 중 (BeautyGAN)",
+  "최종 이미지 생성 중 (PostProcess)",
+];
+const HAIR_LOADING_STEPS = [
+  "얼굴 임베딩 중 (e4e + BiSeNet)",
+  "헤어 형태 합성 중 (SEAN + ShapeAdaptor)",
+  "헤어 색상 적용 중 (CLIP Blending)",
+  "최종 이미지 생성 중 (PostProcess)",
+];
+```
+
+메이크업 단계 간격 4000ms, 헤어 단계 간격 8000ms.
+
+`getMappingName` 방어 코드: 이미 "헤어"로 끝나는 이름에 suffix 중복 방지.
+```ts
+return category === "hair" && name && !name.endsWith("헤어")
+  ? `${name} 헤어`
+  : name;
+```
+
+---
+
+#### ③ 헤어 색상 보존 — `color_img=source_path` (`backend/app/hair/services.py`)
+
+HairFastGAN에서 레퍼런스 이미지의 헤어 색상을 그대로 적용하면 사용자 원본 머리색이 바뀌는 문제 발생.
+
+**해결:** `color_img` 파라미터에 레퍼런스 이미지 대신 사용자 원본 이미지 경로(`source_path`)를 전달해 원본 머리색 유지.
+
+```python
+refs = _resolve_reference_images(reference_images) if reference_images else REFERENCE_IMAGES
+refs = refs[:1]  # TODO: 테스트용 — 프로덕션 배포 전 제거
+for ref in refs:
+    # color_img=source_path: 레퍼런스가 아닌 사용자 원본 색상 유지
+    result = pipeline(..., color_img=source_path, ...)
+```
+
+---
+
+#### ④ 결과 페이지 업로드 사진 카드 높이 고정 (`result/[type]/page.tsx`)
+
+**문제:** 왼쪽 업로드 사진 이미지가 CSS Grid 행 높이를 직접 밀어올려 오른쪽 카드 두 개 합친 높이보다 길어지는 레이아웃 깨짐.
+
+**해결:** `position: absolute`로 이미지를 높이 계산에서 제외.
+
+```tsx
+<div className="lg:col-span-2 h-full">
+  <Card className="h-full overflow-hidden border border-gray-200 flex flex-col">
+    <div className="relative flex-1 overflow-hidden">
+      <img
+        src={faceImage || "/reference/makeup/MS1.png"}
+        alt="업로드된 사진"
+        className="absolute inset-0 w-full h-full object-cover"
+      />
+    </div>
+    <div className="p-3 bg-gray-50 text-center flex-shrink-0">
+      <span className="text-xs text-gray-400">업로드된 원본 사진</span>
+    </div>
+  </Card>
+</div>
+```
+
+헤어 추천 카드 이미지: `object-contain`으로 변경 (머리 위쪽 잘림 방지).
+
+---
+
+#### ⑤ `simulation-complete` 자동 저장 401 수정
+
+**원인:** 페이지 마운트 시 자동 저장 useEffect가 `authorized` 상태 확인 없이 즉시 실행 → JWT가 아직 준비되기 전 API 호출 → 401 Unauthorized.
+
+**해결:** `!authorized` 가드 추가.
+
+```tsx
+useEffect(() => {
+  if (!authorized || !finalResult || autoSaveCalledRef.current) return;
+  autoSaveCalledRef.current = true;
+  // ... POST /api/simulate/save/
+}, [finalResult, authorized]);
+```
+
+---
+
+#### ⑥ SimulationResult 스타일명 텍스트 필드 추가 (마이홈 스타일명 표시)
+
+**문제:** `simulate_save` 뷰가 `hair_mapping`/`makeup_mapping` FK를 저장하지 않아 시리얼라이저의 `appliedStyles`가 항상 빈 배열로 반환됨 → 마이홈 카드에 스타일명 미표시.
+
+**해결:** FK 대신 스타일명 문자열 필드 직접 저장.
+
+`backend/app/models.py` — 필드 추가:
+```python
+makeup_name = models.CharField(max_length=100, blank=True, default='')
+hair_name = models.CharField(max_length=100, blank=True, default='')
+```
+
+`backend/app/core/views.py` — `simulate_save` 뷰에서 저장:
+```python
+sim = SimulationResult(
+    user_id=request.user.id,
+    analysis_session=session,
+    is_saved=is_saved,
+    generated_image_path=f'simulations/{after_image_filename}',
+    makeup_name=request.data.get('makeup_name', ''),
+    hair_name=request.data.get('hair_name', ''),
+)
+```
+
+`backend/app/core/serializers.py` — FK null 시 텍스트 필드 폴백:
+```python
+makeup_name = (instance.makeup_mapping.style_name if instance.makeup_mapping else None) or instance.makeup_name
+hair_name = (instance.hair_mapping.style_name if instance.hair_mapping else None) or instance.hair_name
+if makeup_name:
+    applied_styles.append({'type': 'makeup', 'name': makeup_name})
+if hair_name:
+    applied_styles.append({'type': 'hair', 'name': hair_name})
+data['appliedStyles'] = applied_styles
+```
+
+**마이그레이션 실행 필요:**
+```bash
+python manage.py makemigrations
+python manage.py migrate
+```
+
+---
+
+#### ⑦ 마이홈 Before/After UI 개선 (`my-home/page.tsx`)
+
+- Before 이미지 컨테이너: `w-2/5 flex-shrink-0` → `flex-1` (After와 동일 비율로 양분)
+- 구분 화살표: `left-2/5` → `left-1/2 -translate-x-1/2` (정중앙 정렬)
+
+스타일명 표시:
+```ts
+const STYLE_SUFFIX: Partial<Record<AppliedStyle["type"], string>> = {
+  makeup: "메이크업",
+  hair: "헤어",
+};
+const getDisplayName = (style: AppliedStyle): string => {
+  const suffix = STYLE_SUFFIX[style.type];
+  if (!suffix || style.name.endsWith(suffix)) return style.name;
+  return `${style.name} ${suffix}`;
+};
+```
+
+---
+
+#### ⑧ face_analysis 통합 확인
+
+루트의 `Face_Analysis/` 폴더는 삭제 완료 (수동). 실제 코드는 `backend/app/face_analysis/`에서 동작 중.
+
+`backend/app/core/views.py`에서 sys.path 등록 후 직접 임포트:
+```python
+_FA_DIR = os.path.join(BASE_DIR, 'app', 'face_analysis')
+if _FA_DIR not in sys.path:
+    sys.path.insert(0, _FA_DIR)
+from diagnose import diagnose as fa_diagnose
+from Recommend import recommend as fa_recommend
+```
+
+더미 데이터는 예외 발생 시 폴백으로만 사용.

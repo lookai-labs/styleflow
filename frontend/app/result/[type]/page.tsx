@@ -8,7 +8,6 @@ import { Badge } from "@/components/ui/badge";
 import { Sparkles, Check } from "lucide-react";
 import { StylingSelectionModal } from "@/components/StylingSelectionModal";
 
-/* ── 컬러 팔레트는 퍼스널컬러와 무관하게 고정 표시 ── */
 const ANALYSIS_FALLBACK = {
   faceShape: "둥근형",
   skinTone: "웜톤",
@@ -16,7 +15,29 @@ const ANALYSIS_FALLBACK = {
     { name: "웜 코랄",  hex: "#D4826A" },
     { name: "베이지",   hex: "#C9A882" },
     { name: "웜 브라운",hex: "#7A5238" },
-    { name: "아이보리", hex: "#EDE0C8" },
+  ],
+};
+
+const PERSONAL_COLOR_PALETTE: Record<string, { name: string; hex: string }[]> = {
+  "봄웜": [
+    { name: "코랄",       hex: "#E8826A" },
+    { name: "피치",       hex: "#F2A882" },
+    { name: "주시오렌지", hex: "#F06040" },
+  ],
+  "여름쿨": [
+    { name: "로즈",       hex: "#D4819A" },
+    { name: "듀이핑크",   hex: "#EDB8C8" },
+    { name: "내추럴모브", hex: "#C4A8B4" },
+  ],
+  "가을웜": [
+    { name: "브라운",     hex: "#8C5A3C" },
+    { name: "테라코타",   hex: "#A87050" },
+    { name: "시크딥",     hex: "#6E3828" },
+  ],
+  "겨울쿨": [
+    { name: "버건디",     hex: "#7A1E34" },
+    { name: "글램레드",   hex: "#B82848" },
+    { name: "레드",       hex: "#D01828" },
   ],
 };
 
@@ -56,33 +77,23 @@ type AnalysisResult = {
   makeup_mappings?: StyleMapping[];
 };
 
-const BACKEND_BASE = "http://localhost:8000";
-const toAbsUrl = (url?: string) => {
-  if (!url) return "";
-  return url.startsWith("http") ? url : `${BACKEND_BASE}${url}`;
-};
 
 export default function ResultPage() {
   const router = useRouter();
   const params = useParams();
   const type = params.type as "face" | "outfit";
   const [showStylingSelection, setShowStylingSelection] = useState(false);
-  const [faceImage, setFaceImage] = useState<string>("");
-  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [faceImage] = useState<string>(
+    () => localStorage.getItem("styleflow_face_image") ?? ""
+  );
+  const [analysisResult] = useState<AnalysisResult | null>(() => {
+    const raw = localStorage.getItem("styleflow_analysis_result");
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch { return null; }
+  });
 
   useEffect(() => {
     window.scrollTo(0, 0);
-    const savedImage = localStorage.getItem("styleflow_face_image");
-    if (savedImage) setFaceImage(savedImage);
-
-    const savedResult = localStorage.getItem("styleflow_analysis_result");
-    if (savedResult) {
-      try {
-        setAnalysisResult(JSON.parse(savedResult));
-      } catch {
-        // 파싱 실패 시 폴백 데이터 사용
-      }
-    }
   }, []);
 
   const handleStylingConfirm = (selected: { makeup: boolean; hair: boolean }) => {
@@ -112,14 +123,16 @@ export default function ResultPage() {
 
           <div className="grid lg:grid-cols-5 gap-6">
             {/* 업로드 사진 */}
-            <div className="lg:col-span-2">
-              <Card className="overflow-hidden border border-gray-200">
-                <img
-                  src={faceImage || "/reference/makeup/MS1.png"}
-                  alt="업로드된 사진"
-                  className="w-full h-80 object-cover"
-                />
-                <div className="p-3 bg-gray-50 text-center">
+            <div className="lg:col-span-2 h-full">
+              <Card className="h-full overflow-hidden border border-gray-200 flex flex-col">
+                <div className="relative flex-1 overflow-hidden">
+                  <img
+                    src={faceImage || "/reference/makeup/MS1.png"}
+                    alt="업로드된 사진"
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                </div>
+                <div className="p-3 bg-gray-50 text-center flex-shrink-0">
                   <span className="text-xs text-gray-400">업로드된 원본 사진</span>
                 </div>
               </Card>
@@ -132,7 +145,7 @@ export default function ResultPage() {
               <Card className="p-6 border border-gray-200 bg-white">
                 <div className="flex items-start justify-between mb-3">
                   <span className="text-xs font-semibold tracking-widest text-gray-400 uppercase">얼굴형</span>
-                  <span className="text-lg font-medium">{ANALYSIS_FALLBACK.faceShape}</span>
+                  <span className="text-lg font-medium">{analysisResult?.face_shape ?? ANALYSIS_FALLBACK.faceShape}</span>
                 </div>
                 {analysisResult ? (
                   <p className="text-sm text-gray-600 leading-relaxed">
@@ -163,7 +176,11 @@ export default function ResultPage() {
                 <div className="border-t border-gray-100 pt-4">
                   <span className="text-xs text-gray-400 mb-3 block">추천 컬러 팔레트</span>
                   <div className="flex gap-3">
-                    {ANALYSIS_FALLBACK.colors.map((color) => (
+                    {(
+                      (analysisResult?.personal_color
+                        ? PERSONAL_COLOR_PALETTE[analysisResult.personal_color]
+                        : null) ?? ANALYSIS_FALLBACK.colors
+                    ).map((color) => (
                       <div key={color.name} className="flex flex-col items-center gap-1.5">
                         <div
                           className="w-9 h-9 rounded-full border border-gray-200 shadow-sm"
@@ -198,8 +215,8 @@ export default function ResultPage() {
               const dynamicItems =
                 apiMappings && apiMappings.length > 0
                   ? apiMappings.map((m) => ({
-                      name: m.style_name,
-                      image: toAbsUrl(m.image_url),
+                      name: category === 'hair' ? `${m.style_name} 헤어` : m.style_name,
+                      image: m.image_url ?? "",
                       desc: "",
                     }))
                   : null;
@@ -222,9 +239,9 @@ export default function ResultPage() {
                       >
                         <div className="relative overflow-hidden">
                           <img
-                            src={item.image}
+                            src={item.image || undefined}
                             alt={item.name}
-                            className="w-full h-56 object-cover transition-transform duration-500 group-hover:scale-105"
+                            className={`w-full h-56 transition-transform duration-500 group-hover:scale-105 ${category === 'hair' ? 'object-contain' : 'object-cover object-center'}`}
                           />
                         </div>
                         <div className="p-4">

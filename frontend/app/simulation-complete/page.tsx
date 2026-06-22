@@ -44,10 +44,14 @@ export default function SimulationCompletePage() {
 
   /* ── finalResult 로드 직후 SimulationResult 자동 생성 (is_saved=false) ── */
   useEffect(() => {
-    if (!finalResult || autoSaveCalledRef.current) return;
+    if (!authorized || !finalResult || autoSaveCalledRef.current) return;
     autoSaveCalledRef.current = true;
 
-    const afFilename = (finalResult.afterImage ?? '').split('/').pop() ?? '';
+    const afterUrl = finalResult.afterImage ?? '';
+    const mediaIdx = afterUrl.indexOf('/media/');
+    const afFilename = mediaIdx !== -1
+      ? afterUrl.slice(mediaIdx + '/media/'.length)
+      : afterUrl.split('/').pop() ?? '';
     const faceDataUrl = finalResult.beforeImage?.startsWith('data:')
       ? finalResult.beforeImage
       : localStorage.getItem('styleflow_face_image') ?? '';
@@ -73,7 +77,7 @@ export default function SimulationCompletePage() {
     api.post('/simulate/save/', formData)
       .then((res) => setSavedSimResultId(res.data.id ?? null))
       .catch((e) => console.error('[simulation-complete] 자동 기록 실패:', e));
-  }, [finalResult]);
+  }, [finalResult, authorized]);
 
   const completedSteps = finalResult?.completedStyles ?? ["makeup", "hair"];
   const beforeImage    = finalResult?.beforeImage ?? FALLBACK_BEFORE;

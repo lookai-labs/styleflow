@@ -47,6 +47,22 @@ REFERENCE_IMAGES = [
     {'path': str(BEAUTYGAN_DIR / 'imgs' / 'makeup' / 'MS3.png'), 'name': '로즈 글로우'},
 ]
 
+_FRONTEND_PUBLIC = Path(__file__).resolve().parent.parent.parent.parent / 'frontend' / 'public'
+
+
+def _resolve_reference_images(ref_images: list) -> list:
+    resolved = []
+    for ref in ref_images:
+        url = ref.get('url') or ''
+        name = ref.get('name') or ''
+        if not url:
+            continue
+        if url.startswith('/'):
+            local = _FRONTEND_PUBLIC / url.lstrip('/')
+            if local.exists():
+                resolved.append({'path': str(local), 'name': name})
+    return resolved if resolved else REFERENCE_IMAGES
+
 _detector = None
 _sp = None
 _face_mesh = None
@@ -202,12 +218,12 @@ def release_tf_memory():
     gc.collect()
 
 
-def run_makeup(source_path: str, output_dir: str) -> list:
+def run_makeup(source_path: str, output_dir: str, reference_images: list | None = None) -> list:
     with _lock:
-        return _run_makeup_inner(source_path, output_dir)
+        return _run_makeup_inner(source_path, output_dir, reference_images)
 
 
-def _run_makeup_inner(source_path: str, output_dir: str) -> list:
+def _run_makeup_inner(source_path: str, output_dir: str, reference_images: list | None = None) -> list:
     detector, sp = _get_dlib()
 
     src_img = dlib.load_rgb_image(source_path)
@@ -235,7 +251,8 @@ def _run_makeup_inner(source_path: str, output_dir: str) -> list:
     os.makedirs(output_dir, exist_ok=True)
     results = []
 
-    for ref in REFERENCE_IMAGES:
+    refs = _resolve_reference_images(reference_images) if reference_images else REFERENCE_IMAGES
+    for ref in refs:
         ref_img = dlib.load_rgb_image(ref['path'])
         ref_results = get_face_transform(ref_img, detector, sp)
         if not ref_results:

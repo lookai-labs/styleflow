@@ -14,10 +14,25 @@ HAIRFASTGAN_DIR = Path(__file__).resolve().parent.parent.parent / 'gan_models' /
 
 REFERENCE_IMAGES = [
     {'path': str(HAIRFASTGAN_DIR / 'imgs' / 'hair' / 'MH1.jpg'), 'name': '헤어스타일 1'},
-    # 테스트 후 아래 2개 주석 해제
-    # {'path': str(HAIRFASTGAN_DIR / 'imgs' / 'hair' / 'MH2.jpg'), 'name': '헤어스타일 2'},
-    # {'path': str(HAIRFASTGAN_DIR / 'imgs' / 'hair' / 'MH3.jpg'), 'name': '헤어스타일 3'},
+    {'path': str(HAIRFASTGAN_DIR / 'imgs' / 'hair' / 'MH2.jpg'), 'name': '헤어스타일 2'},
+    {'path': str(HAIRFASTGAN_DIR / 'imgs' / 'hair' / 'MH3.jpg'), 'name': '헤어스타일 3'},
 ]
+
+_FRONTEND_PUBLIC = Path(__file__).resolve().parent.parent.parent.parent / 'frontend' / 'public'
+
+
+def _resolve_reference_images(ref_images: list) -> list:
+    resolved = []
+    for ref in ref_images:
+        url = ref.get('url') or ''
+        name = ref.get('name') or ''
+        if not url:
+            continue
+        if url.startswith('/'):
+            local = _FRONTEND_PUBLIC / url.lstrip('/')
+            if local.exists():
+                resolved.append({'path': str(local), 'name': name})
+    return resolved if resolved else REFERENCE_IMAGES
 
 
 def _get_hair_fast():
@@ -43,21 +58,22 @@ def _get_hair_fast():
     return _hair_fast
 
 
-def run_hair(source_path: str, output_dir: str) -> list:
+def run_hair(source_path: str, output_dir: str, reference_images: list | None = None) -> list:
     with _lock:
-        return _run_hair_inner(source_path, output_dir)
+        return _run_hair_inner(source_path, output_dir, reference_images)
 
 
-def _run_hair_inner(source_path: str, output_dir: str) -> list:
+def _run_hair_inner(source_path: str, output_dir: str, reference_images: list | None = None) -> list:
     hair_fast = _get_hair_fast()
     os.makedirs(output_dir, exist_ok=True)
     results = []
 
-    for ref in REFERENCE_IMAGES:
+    refs = (_resolve_reference_images(reference_images) if reference_images else REFERENCE_IMAGES)[:1]
+    for ref in refs:
         result = hair_fast.swap(
             face_img=source_path,
             shape_img=ref['path'],
-            color_img=ref['path'],
+            color_img=source_path,
             align=True,
         )
         result_tensor = result[0] if isinstance(result, tuple) else result

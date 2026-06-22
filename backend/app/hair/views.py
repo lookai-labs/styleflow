@@ -22,9 +22,13 @@ def simulate_hair(request):
         tmp_path = tmp.name
 
     try:
+        import json
+        ref_json = request.data.get('reference_images')
+        reference_images = json.loads(ref_json) if ref_json else None
+
         from .services import run_hair
         output_dir = os.path.join(settings.MEDIA_ROOT, 'simulations')
-        gan_results = run_hair(tmp_path, output_dir)
+        gan_results = run_hair(tmp_path, output_dir, reference_images=reference_images)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     finally:

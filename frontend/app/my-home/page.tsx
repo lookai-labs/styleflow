@@ -29,6 +29,17 @@ const STYLE_LABEL: Record<AppliedStyle["type"], string> = {
   outfit: "코디",   // API 응답 호환성 유지용
 };
 
+const STYLE_SUFFIX: Partial<Record<AppliedStyle["type"], string>> = {
+  makeup: "메이크업",
+  hair: "헤어",
+};
+
+const getDisplayName = (style: AppliedStyle): string => {
+  const suffix = STYLE_SUFFIX[style.type];
+  if (!suffix || style.name.endsWith(suffix)) return style.name;
+  return `${style.name} ${suffix}`;
+};
+
 
 export default function MyHomePage() {
   const router = useRouter();
@@ -104,8 +115,8 @@ export default function MyHomePage() {
 
                 {/* Before / After 이미지 영역 */}
                 <div className="relative flex h-72">
-                  {/* Before — 좁은 왼쪽 */}
-                  <div className="relative w-2/5 flex-shrink-0">
+                  {/* Before */}
+                  <div className="relative flex-1">
                     <img
                       src={result.beforeImage}
                       alt="Before"
@@ -118,12 +129,12 @@ export default function MyHomePage() {
                   </div>
 
                   {/* 구분 화살표 */}
-                  <div className="absolute left-2/5 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10
+                  <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10
                                   w-7 h-7 rounded-full bg-white flex items-center justify-center shadow-md">
                     <ChevronRight className="w-4 h-4 text-black" />
                   </div>
 
-                  {/* After — 넓은 오른쪽 */}
+                  {/* After */}
                   <div className="relative flex-1">
                     <img
                       src={result.afterImage}
@@ -143,7 +154,7 @@ export default function MyHomePage() {
                     {result.appliedStyles.map((style) => (
                       <div key={style.type} className="flex items-center gap-2 text-sm">
                         <span className="text-xs text-gray-400 w-12 flex-shrink-0">{STYLE_LABEL[style.type]}</span>
-                        <span className="font-medium text-gray-800">{style.name}</span>
+                        <span className="font-medium text-gray-800">{getDisplayName(style)}</span>
                       </div>
                     ))}
                   </div>

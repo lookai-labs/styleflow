@@ -700,7 +700,7 @@ def retrieve_context(state: ChatbotState) -> ChatbotState:
             "personal_color": personal_color,
             "makeup_group": makeup_group,
             "style_code": style_code,
-            "k": 3,
+            "k": 2,
         }
     else:
         query = (
@@ -721,7 +721,7 @@ def retrieve_context(state: ChatbotState) -> ChatbotState:
             "face_shape": face_shape,
             "face_proportion": face_proportion,
             "style_code": style_code,
-            "k": 3,
+            "k": 2,
         }
 
     try:

@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import re
+from typing import Any
+
 from backend.app.rag.rag_core.schemas import AnalysisGenerationInput, RetrievalResult
 
 
 CATEGORY_HAIR = "hair"
 CATEGORY_MAKEUP = "makeup"
+
+
+def _extract_reason_summary(page_content: str) -> str:
+    """page_content에서 '추천/비추천 이유 요약' 섹션만 추출한다."""
+    match = re.search(r'추천/비추천 이유 요약:\n(.*?)(?:\n\n|$)', page_content, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return page_content[:200].strip()
 
 
 def _detect_analysis_category(
@@ -53,23 +64,16 @@ def format_retrieval_results_for_analysis(
 
         for doc_index, document in enumerate(retrieval_result.documents, start=1):
             metadata = document.metadata or {}
-            page_content = document.page_content
+            reason_summary = _extract_reason_summary(document.page_content)
 
             blocks.append(
                 "\n".join(
                     [
                         f"[검색 결과 {result_index}-{doc_index}]",
-                        f"query: {retrieval_result.query}",
-                        f"fallback_stage: {retrieval_result.fallback_stage}",
-                        f"category: {metadata.get('category', '')}",
-                        f"gender: {metadata.get('gender', '')}",
-                        f"face_shape: {metadata.get('face_shape', '')}",
-                        f"face_proportion: {metadata.get('face_proportion', '')}",
-                        f"personal_color: {metadata.get('personal_color', '')}",
-                        f"makeup_group: {metadata.get('makeup_group', '')}",
                         f"style_name: {metadata.get('style_name', '')}",
+                        f"category: {metadata.get('category', '')}",
                         "",
-                        page_content,
+                        f"추천 이유 요약: {reason_summary}",
                     ]
                 )
             )
@@ -217,3 +221,72 @@ def build_analysis_generation_prompt(
         return build_makeup_analysis_generation_prompt(generation_input)
 
     return build_hair_analysis_generation_prompt(generation_input)
+
+
+def build_combined_analysis_generation_prompt(
+    *,
+    gender: str,
+    face_shape: str,
+    face_proportion: str,
+    personal_color: str | None,
+    covered_hair_pairs: list[tuple[dict[str, Any], RetrievalResult]],
+    covered_makeup_pairs: list[tuple[dict[str, Any], RetrievalResult]],
+) -> str:
+    """
+    헤어와 메이크업 분석을 단일 Gemini 호출로 생성하기 위한 통합 프롬프트.
+    """
+    hair_styles = [{"style_name": s["style_name"]} for s, _ in covered_hair_pairs]
+    makeup_styles = [{"style_name": s["style_name"]} for s, _ in covered_makeup_pairs]
+
+    hair_context = format_retrieval_results_for_analysis(
+        [r for _, r in covered_hair_pairs]
+    )
+    makeup_context = format_retrieval_results_for_analysis(
+        [r for _, r in covered_makeup_pairs]
+    )
+
+    hair_style_lines = _build_recommended_style_lines(hair_styles)
+    makeup_style_lines = _build_recommended_style_lines(makeup_styles)
+    personal_color_str = personal_color or "정보 없음"
+
+    return f"""당신은 헤어와 메이크업 분석 결과를 각각 안내하는 AI 어시스턴트입니다.
+
+[공통 원칙]
+- 검색 문맥에 있는 정보만 사용하세요.
+- 검색 문맥 밖의 스타일을 추가하지 마세요.
+- style_code, doc_id 같은 내부 식별자는 노출하지 마세요.
+- 존댓말을 사용하되 AI 안내문처럼 차분하게 작성하세요.
+- 인사말, 감탄문, 과한 칭찬은 사용하지 마세요.
+- 각 분석은 2~3문장, 150자 이내로 작성하세요.
+
+[사용자 진단 정보]
+- 성별: {gender}
+- 얼굴형: {face_shape}
+- 삼정 비율: {face_proportion}
+- 퍼스널컬러: {personal_color_str}
+
+[추천 헤어스타일]
+{hair_style_lines}
+
+[헤어 검색 문맥]
+{hair_context}
+
+[추천 메이크업]
+{makeup_style_lines}
+
+[메이크업 검색 문맥]
+{makeup_context}
+
+[요청]
+헤어 분석: 얼굴형과 삼정 비율을 바탕으로 추천 헤어스타일이 왜 적절한지 간결하게 설명하세요.
+메이크업 분석: 퍼스널컬러를 바탕으로 추천 메이크업이 왜 적절한지 간결하게 설명하세요.
+
+반드시 아래 형식으로 출력하세요.
+
+[헤어 분석]
+(헤어 분석 내용)
+[/헤어 분석]
+
+[메이크업 분석]
+(메이크업 분석 내용)
+[/메이크업 분석]""".strip()
