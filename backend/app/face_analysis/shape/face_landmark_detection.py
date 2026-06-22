@@ -90,6 +90,27 @@ def classify_samjeong(sam_upper: float, sam_mid: float, sam_lower: float,
     }
 
 
+def detect_chin_center(landmarks, w: int, h: int) -> tuple:
+    """chin_left(148)과 chin_right(377)의 중간점을 턱끝으로 반환."""
+    lm148 = landmarks[148]
+    lm377 = landmarks[377]
+    cx = int((lm148.x * w + lm377.x * w) / 2)
+    cy = int((lm148.y * h + lm377.y * h) / 2)
+    return (cx, cy)
+
+
+def detect_nostril_center(landmarks, w: int, h: int) -> tuple:
+    """콧구멍 시작점(lm4, 코끝) ~ 콧구멍 하단(lm2)의 y 중간값.
+    디버그 기준: lm4 y≈47.8%, lm2 y≈50.6% → 중간 y≈49.2% (콧구멍 입구 중간).
+    x는 코 중심(lm4) 기준.
+    """
+    lm4 = landmarks[4]
+    lm2 = landmarks[2]
+    cx = int(lm4.x * w)
+    cy = int((lm4.y * h + lm2.y * h) / 2)
+    return (cx, cy)
+
+
 def detect_brow_center(landmarks, w: int, h: int) -> tuple:
     left_ids  = [70, 63, 105, 66, 107, 55, 65, 52, 53, 46]
     right_ids = [300, 293, 334, 296, 336, 285, 295, 282, 283, 276]
@@ -101,50 +122,55 @@ def detect_brow_center(landmarks, w: int, h: int) -> tuple:
 
 
 def detect_hairline(img_bgr, landmarks, w: int, h: int) -> tuple:
+    """
+    이마에서 위로 스캔해 밝기(Y채널)가 급락하는 지점 = 헤어라인.
+    YCrCb 색상 분류 대신 순수 밝기를 쓰면 머리카락(어두움) vs 이마(밝음) 구분이 명확하다.
+    """
     lm10   = landmarks[10]
     cx     = int(lm10.x * w)
     lm10_y = int(lm10.y * h)
-    half   = 40
+    half   = 80
     x1, x2 = max(0, cx - half), min(w, cx + half)
-    ycrcb   = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2YCrCb)
 
-    s_lo = min(h - 1, lm10_y + 5)
-    s_hi = min(h - 1, lm10_y + 25)
-    sample = ycrcb[s_lo:s_hi + 1, x1:x2]
+    brow_y = detect_brow_center(landmarks, w, h)[1]
+    gray   = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
-    v_ref  = float(sample[:, :, 0].mean())
-    cr_ref = float(sample[:, :, 1].mean())
-    cb_ref = float(sample[:, :, 2].mean())
-    cr_std = max(1.0, float(sample[:, :, 1].std()))
-    cb_std = max(1.0, float(sample[:, :, 2].std()))
+    # 이마 밝기 기준: lm10(이마 상단 랜드마크)과 눈썹 사이의 이마 중간 구간
+    # → 고정 px 대신 비율 기반으로 잡아 이미지 크기에 관계없이 정확
+    forehead_h = max(1, brow_y - lm10_y)
+    ref_lo = lm10_y + forehead_h // 3
+    ref_hi = brow_y - forehead_h // 3
+    if ref_lo >= ref_hi:
+        ref_lo, ref_hi = max(0, lm10_y), max(lm10_y + 1, brow_y)
+    forehead_Y = float(gray[ref_lo:ref_hi, x1:x2].astype(float).mean())
 
-    V_MIN  = v_ref - 50
-    CR_LO  = max(120, cr_ref - 2.5 * cr_std)
-    CR_HI  = min(190, cr_ref + 2.5 * cr_std)
-    CB_LO  = max(70,  cb_ref - 2.5 * cb_std)
-    CB_HI  = min(140, cb_ref + 2.5 * cb_std)
-    SKIN_RATIO      = 0.40
-    NON_SKIN_CONSEC = 6
+    # 머리카락 판정: 이마 밝기의 72% 미만이면 머리카락
+    # 잔머리 허용: SMOOTH_WINDOW로 1~4행 노이즈 평활화, NON_SKIN_CONSEC으로 일시적 어두움 무시
+    HAIR_THRESH      = forehead_Y * 0.60
+    SMOOTH_WINDOW    = 5    # 잔머리 평활화
+    NON_SKIN_CONSEC  = 20   # 연속 어두움 행 수 — 헤어라인 확정
+    SKIN_CONSEC_REQ  = 3    # 연속 밝은 행이 이 수 이상이어야 last_skin_y 갱신 (반사광 방지)
 
-    consec      = 0
-    last_skin_y = lm10_y
+    start_y = max(0, brow_y - 5)
+    row_lums: list[float] = []
+    consec_dark = 0
+    consec_skin = 0
+    last_skin_y = start_y
 
-    for y in range(lm10_y, max(0, lm10_y - 250) - 1, -1):
-        row  = ycrcb[y, x1:x2]
-        v    = row[:, 0].astype(float)
-        cr   = row[:, 1].astype(float)
-        cb   = row[:, 2].astype(float)
-        skin = (
-            (v  >= V_MIN) &
-            (cr >= CR_LO) & (cr <= CR_HI) &
-            (cb >= CB_LO) & (cb <= CB_HI)
-        )
-        if skin.mean() >= SKIN_RATIO:
-            last_skin_y = y
-            consec      = 0
+    for y in range(start_y, max(0, start_y - 700) - 1, -1):
+        row_lum = float(gray[y, x1:x2].astype(float).mean())
+        row_lums.append(row_lum)
+        smooth = float(np.mean(row_lums[-SMOOTH_WINDOW:]))
+
+        if smooth >= HAIR_THRESH:
+            consec_skin += 1
+            consec_dark  = 0
+            if consec_skin >= SKIN_CONSEC_REQ:
+                last_skin_y = y
         else:
-            consec += 1
-            if consec >= NON_SKIN_CONSEC:
+            consec_skin  = 0
+            consec_dark += 1
+            if consec_dark >= NON_SKIN_CONSEC:
                 break
 
     return (cx, last_skin_y)
