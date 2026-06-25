@@ -197,7 +197,7 @@ function UploadPageInner() {
                   <label className="flex flex-col items-center justify-center py-16 cursor-pointer hover:bg-gray-50 transition-colors">
                     <Upload className="w-12 h-12 text-gray-400 mb-4" />
                     <p className="text-lg mb-2">사진을 업로드하거나 클릭하여 찾아보기</p>
-                    <p className="text-sm text-gray-500">PNG, JPG 최대 10MB</p>
+                    <p className="text-sm text-gray-500">PNG, JPG</p>
                     <input type="file" className="hidden" accept="image/*" onChange={handleFileUpload} />
                   </label>
                 </Card>
